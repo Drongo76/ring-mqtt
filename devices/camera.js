@@ -274,15 +274,6 @@ export default class Camera extends RingPolledDevice {
                 value_template: '{{ value_json["lastUpdate"] | default("") }}'
             }
         }
-// --- FIX: sanitize inherited entity attributes (prevent boolean crash)
-Object.keys(this.entity).forEach((k) => {
-    if (this.entity[k]?.attributes && typeof this.entity[k].attributes !== 'string') {
-        delete this.entity[k].attributes
-    }
-})
-// --- END FIX
-
-
 
         this.data.stream.live.worker.on('message', (message) => {
             if (message.type === 'state') {
@@ -1189,10 +1180,7 @@ publishEventSelectState(isPublish) {
     // Process messages from MQTT command topic
     processCommand(command, message) {
         const entityKey = command.split('/')[0]
-
-        // Unknown entity -> let parent handle (needed for snapshot_stream etc.)
         if (!this.entity.hasOwnProperty(entityKey)) {
-            if (super.processCommand) return super.processCommand(command, message)
             this.debug(`Received message to unknown command topic: ${command}`)
             return
         }
@@ -1218,13 +1206,13 @@ publishEventSelectState(isPublish) {
                 break;
             case 'live_allow/command':
                 this.setLiveAllowState(message)
-                break
+                break;
             case 'auto_off_enabled/command':
                 this.setAutoOffEnabled(message)
-                break
+                break;
             case 'auto_off_minutes/command':
                 this.setAutoOffMinutes(message)
-                break
+                break;
             case 'event_stream/command':
                 this.setEventStreamState(message)
                 break;
@@ -1243,9 +1231,6 @@ publishEventSelectState(isPublish) {
             case 'motion_duration/command':
                 this.setDingDuration(message, 'motion')
                 break;
-            default:
-                if (super.processCommand) return super.processCommand(command, message)
-                this.debug(`Received unknown command: ${command}`)
         }
     }
 
@@ -1390,7 +1375,24 @@ publishEventSelectState(isPublish) {
             this.data.snapshot.mode = snapshotMode
             this.data.snapshot.autoInterval = snapshotMode === 'Auto' ? true : this.data.snapshot.autoInterval
             this.updateSnapshotMode()
-            this.publishSnapshotMode{
+            this.publishSnapshotMode()
+
+            if (snapshotMode === 'Auto') {
+                this.debug(`Snapshot mode has been set to ${snapshotMode}, resetting to default values for camera type`)
+                clearInterval(this.data.snapshot.intervalTimerId)
+                this.scheduleSnapshotRefresh()
+                this.publishSnapshotInterval()
+            } else {
+                this.debug(`Snapshot mode has been set to ${snapshotMode}`)
+            }
+
+            this.updateDeviceState()
+        } else {
+            this.debug(`Received invalid command for snapshot mode`)
+        }
+}
+
+    setLiveStreamState(message) {
         const command = message.toLowerCase()
         this.debug(`Received set live stream state ${message}`)
         if (command.startsWith('on-demand')) {
@@ -1418,12 +1420,11 @@ publishEventSelectState(isPublish) {
         } else {
             switch (command) {
                 case 'on':
-                    // Manual start must bypass gate -> allow on-demand kickoff
+                    // Manual live start must open gate so on-demand kickoff is allowed
                     this.data.live_allow.state = 'ON'
                     this.publishLiveAllowState()
 
-                    // Stream was manually started, create a dummy, audio only
-                    // RTSP source stream to trigger stream startup and keep it active
+                    // Start keepalive / live stream
                     this.startKeepaliveStream()
                     this.rescheduleAutoOff()
                     break;
@@ -1433,21 +1434,6 @@ publishEventSelectState(isPublish) {
                         this.data.stream.keepalive.session.kill()
                     } else if (this.data.stream.live.session) {
                         this.data.stream.live.worker.postMessage({ command: 'stop' })
-                    } else {
-                        this.data.stream.live.status = 'inactive'
-                        this.publishStreamState()
-                    }
-                    // Cancel any pending auto-off timer
-                    if (this.data.auto_off.timer) {
-                        clearTimeout(this.data.auto_off.timer)
-                        this.data.auto_off.timer = null
-                    }
-                    break;
-                default:
-                    this.debug(`Received unknown command for live stream`)
-            }
-        }
-    }r.postMessage({ command: 'stop' })
                     } else {
                         this.data.stream.live.status = 'inactive'
                         this.publishStreamState()
