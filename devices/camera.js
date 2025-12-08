@@ -129,12 +129,12 @@ export default class Camera extends RingPolledDevice {
             motion: {
                 component: 'binary_sensor',
                 device_class: 'motion',
-                attributes: true
+                attributes: 'motion'
             },
             stream: {
                 component: 'switch',
                 category: 'diagnostic',
-                attributes: true,
+                attributes: 'stream',
                 name: 'Live Stream',
                 icon: 'mdi:cctv',
                 // Use internal MQTT server for inter-process communications
@@ -143,21 +143,18 @@ export default class Camera extends RingPolledDevice {
             live_allow: {
                 component: 'switch',
                 category: 'config',
-                attributes: false,
                 name: 'Live Allow',
                 icon: 'mdi:shield-lock-outline'
             },
             auto_off_enabled: {
                 component: 'switch',
                 category: 'config',
-                attributes: false,
                 name: 'Live Auto-Off',
                 icon: 'mdi:timer-off-outline'
             },
             auto_off_minutes: {
                 component: 'number',
                 category: 'config',
-                attributes: false,
                 name: 'Live Auto-Off Minuten',
                 icon: 'mdi:timer-outline',
                 min: 1,
@@ -169,7 +166,7 @@ export default class Camera extends RingPolledDevice {
             event_stream: {
                 component: 'switch',
                 category: 'diagnostic',
-                attributes: true,
+                attributes: 'event_stream',
                 icon: 'mdi:vhs',
                 // Use internal MQTT server for inter-process communications
                 ipc: true
@@ -194,13 +191,13 @@ export default class Camera extends RingPolledDevice {
                     'On-demand 1 (Transcoded)', 'On-demand 2 (Transcoded)', 'On-demand 3 (Transcoded)',
                     'On-demand 4 (Transcoded)', 'On-demand 5 (Transcoded)',
                 ],
-                attributes: true
+                attributes: 'event_select'
             },
             ...this.device.isDoorbot ? {
                 ding: {
                     component: 'binary_sensor',
                     device_class: 'occupancy',
-                    attributes: true,
+                    attributes: 'ding',
                     icon: 'mdi:doorbell-video'
                 }
             } : {},
@@ -217,7 +214,7 @@ export default class Camera extends RingPolledDevice {
             } : {},
             snapshot: {
                 component: 'camera',
-                attributes: true
+                attributes: 'snapshot'
             },
             snapshot_mode: {
                 component: 'select',
