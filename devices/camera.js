@@ -275,6 +275,14 @@ export default class Camera extends RingPolledDevice {
             }
         }
 
+        // sanitize inherited entity attributes (prevent boolean crash)
+        Object.keys(this.entity).forEach((k) => {
+            if (this.entity[k]?.attributes && typeof this.entity[k].attributes !== 'string') {
+                delete this.entity[k].attributes
+            }
+        })
+
+
         this.data.stream.live.worker.on('message', (message) => {
             if (message.type === 'state') {
                 switch (message.data) {
