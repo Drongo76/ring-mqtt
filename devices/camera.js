@@ -130,12 +130,12 @@ export default class Camera extends RingPolledDevice {
             motion: {
                 component: 'binary_sensor',
                 device_class: 'motion',
-                attributes: 'motion'
+                attributes: true
             },
             stream: {
                 component: 'switch',
                 category: 'diagnostic',
-                attributes: 'stream',
+                attributes: true,
                 name: 'Live Stream',
                 icon: 'mdi:cctv',
                 // Use internal MQTT server for inter-process communications
@@ -156,7 +156,7 @@ export default class Camera extends RingPolledDevice {
             auto_off_minutes: {
                 component: 'number',
                 category: 'config',
-                name: 'Live Auto-Off Minuten',
+                name: 'Live Auto-Off Minutes',
                 icon: 'mdi:timer-outline',
                 min: 1,
                 max: 60,
@@ -167,7 +167,7 @@ export default class Camera extends RingPolledDevice {
             event_stream: {
                 component: 'switch',
                 category: 'diagnostic',
-                attributes: 'event_stream',
+                attributes: true,
                 icon: 'mdi:vhs',
                 // Use internal MQTT server for inter-process communications
                 ipc: true
@@ -192,13 +192,13 @@ export default class Camera extends RingPolledDevice {
                     'On-demand 1 (Transcoded)', 'On-demand 2 (Transcoded)', 'On-demand 3 (Transcoded)',
                     'On-demand 4 (Transcoded)', 'On-demand 5 (Transcoded)',
                 ],
-                attributes: 'event_select'
+                attributes: true
             },
             ...this.device.isDoorbot ? {
                 ding: {
                     component: 'binary_sensor',
                     device_class: 'occupancy',
-                    attributes: 'ding',
+                    attributes: true,
                     icon: 'mdi:doorbell-video'
                 }
             } : {},
@@ -215,7 +215,7 @@ export default class Camera extends RingPolledDevice {
             } : {},
             snapshot: {
                 component: 'camera',
-                attributes: 'snapshot'
+                attributes: true
             },
             snapshot_mode: {
                 component: 'select',
@@ -282,14 +282,25 @@ export default class Camera extends RingPolledDevice {
                     case 'active':
                         this.data.stream.live.status = 'active'
                         this.data.stream.live.session = true
+                        if (this.data.auto_off?.enabled) {
+                            this.rescheduleAutoOff()
+                        }
                         break;
                     case 'inactive':
                         this.data.stream.live.status = 'inactive'
                         this.data.stream.live.session = false
+                        if (this.data.auto_off?.timer) {
+                            clearTimeout(this.data.auto_off.timer)
+                            this.data.auto_off.timer = null
+                        }
                         break;
                     case 'failed':
                         this.data.stream.live.status = 'failed'
                         this.data.stream.live.session = false
+                        if (this.data.auto_off?.timer) {
+                            clearTimeout(this.data.auto_off.timer)
+                            this.data.auto_off.timer = null
+                        }
                         break;
                 }
                 this.publishStreamState()
@@ -719,40 +730,24 @@ export default class Camera extends RingPolledDevice {
         this.mqttPublish(this.entity.snapshot_mode.state_topic, this.data.snapshot.mode)
     }
 
-
     publishStreamState(isPublish) {
         ['live', 'event'].forEach(type => {
             const entityProp = (type === 'live') ? 'stream' : `${type}_stream`
             if (this.entity.hasOwnProperty(entityProp)) {
-                const streamState =
-                    (this.data.stream[type].status === 'active' || this.data.stream[type].status === 'activating')
-                        ? 'ON' : 'OFF'
-
+                const streamState = (this.data.stream[type].status === 'active' || this.data.stream[type].status === 'activating') ? 'ON' : 'OFF'
                 if (streamState !== this.data.stream[type].state || isPublish) {
                     this.data.stream[type].state = streamState
                     this.mqttPublish(this.entity[entityProp].state_topic, this.data.stream[type].state)
                     // Publish state to IPC broker as well
-                    utils.event.emit(
-                        'mqtt_ipc_publish',
-                        this.entity[entityProp].state_topic,
-                        this.data.stream[type].state
-                    )
+                    utils.event.emit('mqtt_ipc_publish', this.entity[entityProp].state_topic, this.data.stream[type].state)
                 }
 
                 if (this.data.stream[type].publishedStatus !== this.data.stream[type].status || isPublish) {
                     this.data.stream[type].publishedStatus = this.data.stream[type].status
                     const attributes = { status: this.data.stream[type].status }
-                    this.mqttPublish(
-                        this.entity[entityProp].json_attributes_topic,
-                        JSON.stringify(attributes),
-                        'attr'
-                    )
+                    this.mqttPublish(this.entity[entityProp].json_attributes_topic, JSON.stringify(attributes), 'attr')
                     // Publish attribute state to IPC broker as well
-                    utils.event.emit(
-                        'mqtt_ipc_publish',
-                        this.entity[entityProp].json_attributes_topic,
-                        JSON.stringify(attributes)
-                    )
+                    utils.event.emit('mqtt_ipc_publish', this.entity[entityProp].json_attributes_topic, JSON.stringify(attributes))
                 }
             }
         })
@@ -763,7 +758,7 @@ export default class Camera extends RingPolledDevice {
         const st = this.data.live_allow.state === 'ON' ? 'ON' : 'OFF'
         if (st !== this.data.live_allow.publishedState || isPublish) {
             this.data.live_allow.publishedState = st
-            this.mqttPublish(this.entity.live_allow.state_topic, st, true)
+            this.mqttPublish(this.entity.live_allow.state_topic, st)
         }
     }
 
@@ -772,7 +767,7 @@ export default class Camera extends RingPolledDevice {
         const st = this.data.auto_off.enabled ? 'ON' : 'OFF'
         if (st !== this.data.auto_off.publishedEnabled || isPublish) {
             this.data.auto_off.publishedEnabled = st
-            this.mqttPublish(this.entity.auto_off_enabled.state_topic, st, true)
+            this.mqttPublish(this.entity.auto_off_enabled.state_topic, st)
         }
     }
 
@@ -781,11 +776,11 @@ export default class Camera extends RingPolledDevice {
         const val = String(this.data.auto_off.minutes)
         if (val !== this.data.auto_off.publishedMinutes || isPublish) {
             this.data.auto_off.publishedMinutes = val
-            this.mqttPublish(this.entity.auto_off_minutes.state_topic, val, true)
+            this.mqttPublish(this.entity.auto_off_minutes.state_topic, val)
         }
     }
 
-publishEventSelectState(isPublish) {
+    publishEventSelectState(isPublish) {(isPublish) {
         if (this.data.event_select.state !== this.data.event_select.publishedState || isPublish) {
             this.data.event_select.publishedState = this.data.event_select.state
             this.mqttPublish(this.entity.event_select.state_topic, this.data.event_select.state)
@@ -1203,84 +1198,10 @@ publishEventSelectState(isPublish) {
                 this.takeSnapshot(message)
                 break;
             case 'stream/command':
-                this.setLiveStreamState(message) {
-        const command = message.toLowerCase()
-        this.debug(`Received set live stream state ${message}`)
-
-        if (command.startsWith('on-demand')) {
-            // MANUAL-ONLY MODE: ignore automatic ON-DEMAND starts
-            if (this.data.live_allow?.state !== 'ON') {
-                this.debug('Live Allow OFF -> ignoring ON-DEMAND live stream command (manual-start mode)')
-            } else {
-                this.debug('Ignoring ON-DEMAND live stream command (manual-start mode)')
-            }
-
-            // Falls der Stream bereits läuft, nur Auto-Off neu planen
-            if (this.data.stream.live.status === 'active' || this.data.stream.live.status === 'activating') {
-                this.publishStreamState()
-                this.rescheduleAutoOff()
-            }
-            return
-        }
-
-        switch (command) {
-            case 'on': {
-                // Manueller Start: Stream sofort aktivieren, ohne ON-DEMAND
-                if (this.data.stream.live.status === 'active' || this.data.stream.live.status === 'activating') {
-                    this.debug('Live stream already active/activating on manual ON')
-                    this.publishStreamState()
-                    this.rescheduleAutoOff()
-                    break
-                }
-
-                this.debug('Manual ON -> starting live stream immediately (no ON-DEMAND)')
-                this.data.stream.live.status = 'activating'
-                this.publishStreamState()
-
-                const rtspPublishUrl = (utils.config().livestream_user && utils.config().livestream_pass)
-                    ? `rtsp://${utils.config().livestream_user}:${utils.config().livestream_pass}@localhost:8554/${this.deviceId}_live`
-                    : `rtsp://localhost:8554/${this.deviceId}_live`
-
-                this.startLiveStream(rtspPublishUrl)
-                this.startKeepaliveStream()
-                this.rescheduleAutoOff()
-                break
-            }
-            case 'off': {
-                this.debug('Manual OFF -> hard stop live/keepalive')
-
-                if (this.data.stream.keepalive.session) {
-                    this.debug('Stopping the keepalive stream')
-                    this.data.stream.keepalive.session.kill()
-                    this.data.stream.keepalive.session = false
-                    this.data.stream.keepalive.active = false
-                }
-
-                if (this.data.stream.live.session) {
-                    try {
-                        this.data.stream.live.worker.postMessage({ command: 'stop' })
-                    } catch (e) {
-                        this.debug(e)
-                    }
-                    this.data.stream.live.session = false
-                }
-
-                this.data.stream.live.status = 'inactive'
-                this.publishStreamState()
-
-                if (this.data.auto_off.timer) {
-                    clearTimeout(this.data.auto_off.timer)
-                    this.data.auto_off.timer = null
-                }
-                break
-            }
-            default:
-                this.debug(`Received unknown command for live stream`)
-        }
-    }
-
-
-    setLiveAllowState(message)
+                this.setLiveStreamState(message)
+                break;
+            case 'live_allow/command':
+                this.setLiveAllowState(message)
                 break;
             case 'auto_off_enabled/command':
                 this.setAutoOffEnabled(message)
@@ -1470,57 +1391,84 @@ publishEventSelectState(isPublish) {
     setLiveStreamState(message) {
         const command = message.toLowerCase()
         this.debug(`Received set live stream state ${message}`)
+
+        // ON-DEMAND wird nicht mehr zum Starten verwendet (nur Logging + ggf. Auto-Off neu planen)
         if (command.startsWith('on-demand')) {
-            // HARD BLOCK autostart when Live Allow is OFF (FAIL-CLOSED).
-            // Manual ON still works because it doesn't use ON-DEMAND.
-            if (this.data.live_allow?.state !== 'ON' &&
-                this.data.stream.live.status !== 'active' &&
-                this.data.stream.live.status !== 'activating') {
-                this.debug('Live Allow OFF -> blocking initial ON-DEMAND autostart')
-                this.data.stream.live.status = 'inactive'
-                this.publishStreamState()
-                this.rescheduleAutoOff()
-                return
+            if (this.data.live_allow?.state !== 'ON') {
+                this.debug('Live Allow OFF -> ignoring ON-DEMAND live stream command (manual-only mode)')
+            } else {
+                this.debug('Ignoring ON-DEMAND live stream command (manual-only mode)')
             }
 
             if (this.data.stream.live.status === 'active' || this.data.stream.live.status === 'activating') {
                 this.publishStreamState()
                 this.rescheduleAutoOff()
-            } else {
+            }
+            return
+        }
+
+        switch (command) {
+            case 'on': {
+                // Wenn bereits aktiv/aktiviert, nur Zustand erneut publizieren
+                if (this.data.stream.live.status === 'active' || this.data.stream.live.status === 'activating') {
+                    this.debug('Live stream already active/activating on manual ON')
+                    this.publishStreamState()
+                    this.rescheduleAutoOff()
+                    break
+                }
+
+                // Wenn Live Allow OFF -> manuellen Start ignorieren
+                if (this.data.live_allow && this.data.live_allow.state !== 'ON') {
+                    this.debug('Live Allow OFF -> ignoring manual ON')
+                    break
+                }
+
+                this.debug('Manual ON -> starting live stream immediately (no ON-DEMAND)')
                 this.data.stream.live.status = 'activating'
                 this.publishStreamState()
+
+                const rtspPublishUrl = (utils.config().livestream_user && utils.config().livestream_pass)
+                    ? `rtsp://${utils.config().livestream_user}:${utils.config().livestream_pass}@localhost:8554/${this.deviceId}_live`
+                    : `rtsp://localhost:8554/${this.deviceId}_live`
+
+                this.startLiveStream(rtspPublishUrl)
+                this.startKeepaliveStream()
                 this.rescheduleAutoOff()
-                this.startLiveStream(message.split(' ')[1]) // Portion after space is the RTSP publish URL
+                break
             }
-        } else {
-            switch (command) {
-                case 'on':
-                    // Stream was manually started, create a dummy, audio only
-                    // RTSP source stream to trigger stream startup and keep it active
-                    this.startKeepaliveStream()
-                    this.rescheduleAutoOff()
-                    break;
-                case 'off':
-                    if (this.data.stream.keepalive.session) {
-                        this.debug('Stopping the keepalive stream')
-                        this.data.stream.keepalive.session.kill()
-                    } else if (this.data.stream.live.session) {
+            case 'off': {
+                this.debug('Manual OFF -> hard stop live/keepalive')
+
+                if (this.data.stream.keepalive.session) {
+                    this.debug('Stopping the keepalive stream')
+                    this.data.stream.keepalive.session.kill()
+                    this.data.stream.keepalive.session = false
+                    this.data.stream.keepalive.active = false
+                }
+
+                if (this.data.stream.live.session) {
+                    try {
                         this.data.stream.live.worker.postMessage({ command: 'stop' })
-                    } else {
-                        this.data.stream.live.status = 'inactive'
-                        this.publishStreamState()
+                    } catch (e) {
+                        this.debug(e)
                     }
-                    // Cancel any pending auto-off timer
-                    if (this.data.auto_off.timer) {
-                        clearTimeout(this.data.auto_off.timer)
-                        this.data.auto_off.timer = null
-                    }
-                    break;
-                default:
-                    this.debug(`Received unknown command for live stream`)
+                    this.data.stream.live.session = false
+                }
+
+                this.data.stream.live.status = 'inactive'
+                this.publishStreamState()
+
+                if (this.data.auto_off && this.data.auto_off.timer) {
+                    clearTimeout(this.data.auto_off.timer)
+                    this.data.auto_off.timer = null
+                }
+                break
             }
+            default:
+                this.debug(`Received unknown command for live stream`)
         }
     }
+
 
     setLiveAllowState(message) {
         const command = message.toLowerCase()
@@ -1533,8 +1481,10 @@ publishEventSelectState(isPublish) {
             // Kill-Switch: Wenn Live Allow OFF, sofort den Live-Stream hart stoppen
             if (this.data.live_allow.state === 'OFF') {
                 this.debug('Live Allow turned OFF -> stopping live stream immediately (kill switch)')
-                this.setLiveStreamState('OFF')
+                this.setLiveStreamState('off')
             }
+        } else {
+            this.debug('Received unknown command for live_allow state')
         }
     }
 
@@ -1546,17 +1496,21 @@ publishEventSelectState(isPublish) {
             this.publishAutoOffEnabledState()
             this.updateDeviceState()
             this.rescheduleAutoOff()
+        } else {
+            this.debug('Received unknown command for auto_off_enabled')
         }
     }
 
     setAutoOffMinutes(message) {
-        const n = parseInt(message, 10)
         this.debug(`Received set auto_off_minutes ${message}`)
+        const n = parseInt(message, 10)
         if (!Number.isNaN(n) && n >= 1 && n <= 60) {
             this.data.auto_off.minutes = n
             this.publishAutoOffMinutesState()
             this.updateDeviceState()
             this.rescheduleAutoOff()
+        } else {
+            this.debug('Received invalid value for auto_off_minutes (must be 1-60)')
         }
     }
 
@@ -1579,7 +1533,7 @@ publishEventSelectState(isPublish) {
                 return
             }
             this.debug('Auto-off timer fired -> stopping live stream')
-            this.setLiveStreamState('OFF')
+            this.setLiveStreamState('off')
         }, ms)
     }
 
