@@ -275,14 +275,6 @@ export default class Camera extends RingPolledDevice {
             }
         }
 
-        // sanitize inherited entity attributes (prevent boolean crash)
-        Object.keys(this.entity).forEach((k) => {
-            if (this.entity[k]?.attributes && typeof this.entity[k].attributes !== 'string') {
-                delete this.entity[k].attributes
-            }
-        })
-
-
         this.data.stream.live.worker.on('message', (message) => {
             if (message.type === 'state') {
                 switch (message.data) {
@@ -1428,11 +1420,8 @@ publishEventSelectState(isPublish) {
         } else {
             switch (command) {
                 case 'on':
-                    // Manual live start must open gate so on-demand kickoff is allowed
-                    this.data.live_allow.state = 'ON'
-                    this.publishLiveAllowState()
-
-                    // Start keepalive / live stream
+                    // Stream was manually started, create a dummy, audio only
+                    // RTSP source stream to trigger stream startup and keep it active
                     this.startKeepaliveStream()
                     this.rescheduleAutoOff()
                     break;
