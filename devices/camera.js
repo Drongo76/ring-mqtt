@@ -721,18 +721,44 @@ export default class Camera extends RingPolledDevice {
         this.mqttPublish(this.entity.snapshot_mode.state_topic, this.data.snapshot.mode)
     }
 
+
     publishStreamState(isPublish) {
         ['live', 'event'].forEach(type => {
             const entityProp = (type === 'live') ? 'stream' : `${type}_stream`
             if (this.entity.hasOwnProperty(entityProp)) {
-                const streamState = (this.data.stream[type].status === 'active' || this.data.stream[type].status === 'activating') ? 'ON' : 'OFF'
+                const streamState =
+                    (this.data.stream[type].status === 'active' || this.data.stream[type].status === 'activating')
+                        ? 'ON' : 'OFF'
+
                 if (streamState !== this.data.stream[type].state || isPublish) {
                     this.data.stream[type].state = streamState
                     this.mqttPublish(this.entity[entityProp].state_topic, this.data.stream[type].state)
                     // Publish state to IPC broker as well
-                    utils.event.emit('mqtt_ipc_publish', this.entity[entityProp].state_topic, this.data.stream[type].state)
+                    utils.event.emit(
+                        'mqtt_ipc_publish',
+                        this.entity[entityProp].state_topic,
+                        this.data.stream[type].state
+                    )
                 }
 
+                if (this.data.stream[type].publishedStatus !== this.data.stream[type].status || isPublish) {
+                    this.data.stream[type].publishedStatus = this.data.stream[type].status
+                    const attributes = { status: this.data.stream[type].status }
+                    this.mqttPublish(
+                        this.entity[entityProp].json_attributes_topic,
+                        JSON.stringify(attributes),
+                        'attr'
+                    )
+                    // Publish attribute state to IPC broker as well
+                    utils.event.emit(
+                        'mqtt_ipc_publish',
+                        this.entity[entityProp].json_attributes_topic,
+                        JSON.stringify(attributes)
+                    )
+                }
+            }
+        })
+    }
 
     publishLiveAllowState(isPublish) {
         if (!this.entity.live_allow) return
@@ -761,18 +787,7 @@ export default class Camera extends RingPolledDevice {
         }
     }
 
-                if (this.data.stream[type].publishedStatus !== this.data.stream[type].status || isPublish) {
-                    this.data.stream[type].publishedStatus = this.data.stream[type].status
-                    const attributes = { status: this.data.stream[type].status }
-                    this.mqttPublish(this.entity[entityProp].json_attributes_topic, JSON.stringify(attributes), 'attr')
-                    // Publish attribute state to IPC broker as well
-                    utils.event.emit('mqtt_ipc_publish', this.entity[entityProp].json_attributes_topic, JSON.stringify(attributes))
-                }
-            }
-        })
-    }
-
-    publishEventSelectState(isPublish) {
+publishEventSelectState(isPublish) {
         if (this.data.event_select.state !== this.data.event_select.publishedState || isPublish) {
             this.data.event_select.publishedState = this.data.event_select.state
             this.mqttPublish(this.entity.event_select.state_topic, this.data.event_select.state)
