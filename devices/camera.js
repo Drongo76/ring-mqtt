@@ -1105,7 +1105,7 @@ publishEventSelectState(isPublish) {
                 paginationKey = history.pagination_key ? history.pagination_key.replace(/={1,2}$/, '') : false
 
                 // If we have enough events, break the loop, otherwise decrease the loop counter
-                loop = (events.length >= eventNumber || !history.paginationKey) ? 0 : loop-1
+                loop = (events.length >= eventNumber || !history.pagination_key) ? 0 : loop-1
             }
         } catch(error) {
             this.debug(error)
@@ -1371,7 +1371,7 @@ publishEventSelectState(isPublish) {
         this.debug(`Received set snapshot mode to ${message}`)
         const snapshotMode = message.toLowerCase().replace(/(^\w{1})|(\s+\w{1})/g, letter => letter.toUpperCase())
 
-        if (this.entity.snapshot_mode.options.map(o => o.includes(snapshotMode))) {
+        if (this.entity.snapshot_mode.options.some(o => o === snapshotMode)) {
             this.data.snapshot.mode = snapshotMode
             this.data.snapshot.autoInterval = snapshotMode === 'Auto' ? true : this.data.snapshot.autoInterval
             this.updateSnapshotMode()
@@ -1392,21 +1392,20 @@ publishEventSelectState(isPublish) {
         }
 }
 
+
     setLiveStreamState(message) {
         const command = message.toLowerCase()
         this.debug(`Received set live stream state ${message}`)
 
         if (command.startsWith('on-demand')) {
-            // ON-DEMAND wird NUR akzeptiert, wenn:
-            // 1) Live Allow = ON (Kill-Switch nicht aktiv) UND
-            // 2) der Live-Stream-Schalter vorher manuell auf ON gesetzt wurde
+            // ON-DEMAND wird nur akzeptiert, wenn Live Allow nicht auf OFF steht.
+            // Damit kann Live Allow als globaler Kill-Switch / Freigabe-Schalter dienen.
             const liveAllowed = !this.data.live_allow || this.data.live_allow.state === 'ON'
-            const manualArmed = this.data.stream && this.data.stream.live && this.data.stream.live.manual === true
 
-            if ((!liveAllowed || !manualArmed) &&
+            if (!liveAllowed &&
                 this.data.stream.live.status !== 'active' &&
                 this.data.stream.live.status !== 'activating') {
-                this.debug('Blocking ON-DEMAND: Live Allow OFF oder Live-Stream-Schalter ist OFF -> kein Autostart')
+                this.debug('Blocking ON-DEMAND: Live Allow OFF -> kein Live-Stream-Start')
                 this.data.stream.live.status = 'inactive'
                 this.publishStreamState()
                 this.rescheduleAutoOff()
@@ -1420,44 +1419,19 @@ publishEventSelectState(isPublish) {
                 this.data.stream.live.status = 'activating'
                 this.publishStreamState()
                 this.rescheduleAutoOff()
-                this.startLiveStream(message.split(' ')[1]) // Portion after space is the RTSP publish URL
+                this.startLiveStream(message.split(' ')[1]) // Portion nach dem Leerzeichen ist die RTSP Publish URL
             }
         } else {
             switch (command) {
                 case 'on':
                     // Manueller Start:
-                    //  - respektiert Live Allow (Kill-Switch)
-                    //  - setzt "manual" Flag, damit der nächste ON-DEMAND-Handshake starten darf
-                    if (this.data.live_allow && this.data.live_allow.state !== 'ON') {
-                        this.debug('Live Allow OFF -> manueller Live Stream ON wird ignoriert')
-                        if (this.data.stream && this.data.stream.live) {
-                            this.data.stream.live.manual = false
-                            this.data.stream.live.status = 'inactive'
-                        }
-                        this.publishStreamState()
-                        if (this.data.auto_off.timer) {
-                            clearTimeout(this.data.auto_off.timer)
-                            this.data.auto_off.timer = null
-                        }
-                        break
-                    }
-
-                    this.debug('Manueller Live Stream ON -> ON-DEMAND-Start ist jetzt erlaubt')
-                    if (this.data.stream && this.data.stream.live) {
-                        this.data.stream.live.manual = true
-                    }
-
-                    // Dummy, Audio-only RTSP-Quelle, damit go2rtc den ON-DEMAND-Stream startet
+                    //  - startet den Keepalive-Stream, damit der RTSP-Stream aktiv bleibt
+                    //  - eigentliche Ring-WebRTC-Session wird wie gewohnt über ON-DEMAND gestartet
                     this.startKeepaliveStream()
                     this.rescheduleAutoOff()
                     break;
 
                 case 'off':
-                    // Manueller OFF: Flag zurücksetzen und alle Sessions stoppen
-                    if (this.data.stream && this.data.stream.live) {
-                        this.data.stream.live.manual = false
-                    }
-
                     if (this.data.stream.keepalive.session) {
                         this.debug('Stopping the keepalive stream')
                         this.data.stream.keepalive.session.kill()
@@ -1468,6 +1442,7 @@ publishEventSelectState(isPublish) {
                         this.data.stream.live.status = 'inactive'
                         this.publishStreamState()
                     }
+
                     // Auto-Off Timer abbrechen
                     if (this.data.auto_off.timer) {
                         clearTimeout(this.data.auto_off.timer)
@@ -1480,6 +1455,7 @@ publishEventSelectState(isPublish) {
             }
         }
     }
+
 
     setLiveAllowState(message) {
         const command = message.toLowerCase()
