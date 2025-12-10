@@ -1015,7 +1015,7 @@ publishEventSelectState(isPublish) {
 
         this.data.stream.keepalive.session.on('close', async () => {
             this.data.stream.keepalive.active = false
-            this.data.stream.keepalive.session = false
+            this.data.stream.keepalive.session = null
             this.debug(`The keepalive stream has stopped`)
         })
 
@@ -1026,7 +1026,7 @@ publishEventSelectState(isPublish) {
         }
         this.data.stream.keepalive.session.kill()
         this.data.stream.keepalive.active = false
-        this.data.stream.keepalive.session = false
+        this.data.stream.keepalive.session = null
     }
 
     async updateEventStreamUrl() {
@@ -1430,16 +1430,20 @@ publishEventSelectState(isPublish) {
                     break
 
                 case 'off':
-                    // Manueller OFF: Flag zuruecksetzen und alle Sessions stoppen
+                    // Manueller OFF / interner Stop: alle Sessions stoppen
                     if (this.data.stream && this.data.stream.live) {
                         this.data.stream.live.manual = false
                     }
 
-                    if (this.data.stream.keepalive.session) {
+                    const keepaliveSession = this.data.stream.keepalive.session
+                    if (keepaliveSession && typeof keepaliveSession.kill === 'function') {
                         this.debug('Stopping the keepalive stream')
-                        this.data.stream.keepalive.session.kill()
-                        this.data.stream.keepalive.session = null
-                    } else if (this.data.stream.live.session) {
+                        keepaliveSession.kill()
+                    }
+                    this.data.stream.keepalive.session = null
+                    this.data.stream.keepalive.active = false
+
+                    if (this.data.stream.live.session) {
                         this.data.stream.live.worker.postMessage({ command: 'stop' })
                     } else {
                         this.data.stream.live.status = 'inactive'
@@ -1475,23 +1479,6 @@ publishEventSelectState(isPublish) {
                 // Live Allow ON: ermoeglicht ON-DEMAND-Start,
                 // selbst wird aber keinen Stream ohne Client starten.
                 this.debug('Live Allow ON -> ON-DEMAND-Start ist jetzt erlaubt (nur bei RTSP-Client-Anfrage)')
-            }
-        }
-    }
-
-
-        const command = message.toLowerCase()
-        this.debug(`Received set live_allow state ${message}`)
-        if (command === 'on' || command === 'off') {
-            this.data.live_allow.state = (command === 'on') ? 'ON' : 'OFF'
-            this.publishLiveAllowState()
-            this.updateDeviceState()
-
-            // Kill-Switch: sobald Live Allow auf OFF geht,
-            // aktuellen Live-Stream SOFORT stoppen (inkl. manueller Flag)
-            if (this.data.live_allow.state === 'OFF') {
-                this.debug('Live Allow OFF -> Kill-Switch: Live Stream wird sofort gestoppt')
-                this.setLiveStreamState('OFF')
             }
         }
     }
