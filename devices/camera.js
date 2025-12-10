@@ -1015,7 +1015,7 @@ publishEventSelectState(isPublish) {
 
         this.data.stream.keepalive.session.on('close', async () => {
             this.data.stream.keepalive.active = false
-            this.data.stream.keepalive.session = null
+            this.data.stream.keepalive.session = false
             this.debug(`The keepalive stream has stopped`)
         })
 
@@ -1026,7 +1026,7 @@ publishEventSelectState(isPublish) {
         }
         this.data.stream.keepalive.session.kill()
         this.data.stream.keepalive.active = false
-        this.data.stream.keepalive.session = null
+        this.data.stream.keepalive.session = false
     }
 
     async updateEventStreamUrl() {
@@ -1397,8 +1397,8 @@ publishEventSelectState(isPublish) {
         this.debug(`Received set live stream state ${message}`)
 
         if (command.startsWith('on-demand')) {
-            // ON-DEMAND wird nur akzeptiert, wenn Live Allow = ON (Kill-Switch nicht aktiv).
-            // Es ist KEIN zusätzlicher manueller Stream-Schalter nötig.
+            // ON-DEMAND wird nur von Live Allow (Kill-Switch) gesteuert.
+            // Der Home-Assistant "Live Stream"-Schalter ist nur STATUS-Anzeige.
             const liveAllowed = !this.data.live_allow || this.data.live_allow.state === 'ON'
 
             if (!liveAllowed &&
@@ -1418,7 +1418,7 @@ publishEventSelectState(isPublish) {
                 this.data.stream.live.status = 'activating'
                 this.publishStreamState()
                 this.rescheduleAutoOff()
-                // Portion nach dem Leerzeichen ist die RTSP Publish URL
+                // Portion nach dem Leerzeichen ist die RTSP-Publish-URL
                 this.startLiveStream(message.split(' ')[1])
             }
         } else {
@@ -1430,20 +1430,21 @@ publishEventSelectState(isPublish) {
                     break
 
                 case 'off':
-                    // Manueller OFF / interner Stop: alle Sessions stoppen
+                    // Manueller OFF: Flag zurücksetzen und alle Sessions stoppen
                     if (this.data.stream && this.data.stream.live) {
                         this.data.stream.live.manual = false
                     }
 
-                    const keepaliveSession = this.data.stream.keepalive.session
-                    if (keepaliveSession && typeof keepaliveSession.kill === 'function') {
-                        this.debug('Stopping the keepalive stream')
-                        keepaliveSession.kill()
-                    }
-                    this.data.stream.keepalive.session = null
-                    this.data.stream.keepalive.active = false
-
-                    if (this.data.stream.live.session) {
+                    if (this.data.stream.keepalive && this.data.stream.keepalive.session) {
+                        const keepaliveSession = this.data.stream.keepalive.session
+                        if (typeof keepaliveSession.kill === 'function') {
+                            this.debug('Stopping the keepalive stream')
+                            keepaliveSession.kill()
+                        } else {
+                            this.debug('Keepalive session hat keine kill()-Methode, wird nur verworfen')
+                        }
+                        this.data.stream.keepalive.session = null
+                    } else if (this.data.stream.live.session) {
                         this.data.stream.live.worker.postMessage({ command: 'stop' })
                     } else {
                         this.data.stream.live.status = 'inactive'
@@ -1476,8 +1477,7 @@ publishEventSelectState(isPublish) {
                 this.debug('Live Allow OFF -> Kill-Switch: Live Stream wird sofort gestoppt')
                 this.setLiveStreamState('OFF')
             } else {
-                // Live Allow ON: ermoeglicht ON-DEMAND-Start,
-                // selbst wird aber keinen Stream ohne Client starten.
+                // Live Allow ON: ON-DEMAND darf jetzt starten, wenn ein RTSP-Client verbindet
                 this.debug('Live Allow ON -> ON-DEMAND-Start ist jetzt erlaubt (nur bei RTSP-Client-Anfrage)')
             }
         }
