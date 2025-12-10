@@ -1396,95 +1396,103 @@ publishEventSelectState(isPublish) {
         const command = message.toLowerCase()
         this.debug(`Received set live stream state ${message}`)
 
-        // In diesem Modus wird der Live-Stream NICHT mehr automatisch über ON-DEMAND oder den
-        // "Live Stream"-Schalter gestartet. Der einzige Startschalter ist "Live Allow".
         if (command.startsWith('on-demand')) {
-            this.debug('Ignoring ON-DEMAND command in manual Live Allow mode')
-            // Falls der Stream bereits läuft, nur Auto-Off neu planen
+            // ON-DEMAND wird nur akzeptiert, wenn Live Allow = ON (Kill-Switch nicht aktiv).
+            // Es ist KEIN zusätzlicher manueller Stream-Schalter nötig.
+            const liveAllowed = !this.data.live_allow || this.data.live_allow.state === 'ON'
+
+            if (!liveAllowed &&
+                this.data.stream.live.status !== 'active' &&
+                this.data.stream.live.status !== 'activating') {
+                this.debug('Blocking ON-DEMAND: Live Allow OFF -> kein Live-Stream-Start')
+                this.data.stream.live.status = 'inactive'
+                this.publishStreamState()
+                this.rescheduleAutoOff()
+                return
+            }
+
             if (this.data.stream.live.status === 'active' || this.data.stream.live.status === 'activating') {
                 this.publishStreamState()
                 this.rescheduleAutoOff()
-            }
-            return
-        }
-
-        switch (command) {
-            case 'on':
-                // "Live Stream"-Schalter wird in diesem Modus nicht zum Starten verwendet.
-                this.debug('Ignoring manual stream ON in manual Live Allow mode (use Live Allow instead)')
-                if (this.data.stream.live.status === 'active' || this.data.stream.live.status === 'activating') {
-                    this.publishStreamState()
-                    this.rescheduleAutoOff()
-                }
-                break
-            case 'off':
-                this.debug('Stopping live stream (called from stream command or kill switch)')
-                if (this.data.stream.keepalive.session) {
-                    this.debug('Stopping the keepalive stream')
-                    this.data.stream.keepalive.session.kill()
-                    this.data.stream.keepalive.session = null
-                    this.data.stream.keepalive.active = false
-                }
-
-                if (this.data.stream.live.session) {
-                    try {
-                        this.data.stream.live.worker.postMessage({ command: 'stop' })
-                    } catch (e) {
-                        this.debug(e)
-                    }
-                    this.data.stream.live.session = false
-                }
-
-                this.data.stream.live.status = 'inactive'
+            } else {
+                this.data.stream.live.status = 'activating'
                 this.publishStreamState()
+                this.rescheduleAutoOff()
+                // Portion nach dem Leerzeichen ist die RTSP Publish URL
+                this.startLiveStream(message.split(' ')[1])
+            }
+        } else {
+            switch (command) {
+                case 'on':
+                    // In diesem Fork ist der "Live Stream"-Switch nur eine STATUS-Anzeige.
+                    // Zum Starten/Stoppen bitte ausschliesslich "Live Allow" verwenden.
+                    this.debug('Ignoring manual live stream ON command (Status-Schalter, bitte Live Allow verwenden)')
+                    break
 
-                if (this.data.auto_off && this.data.auto_off.timer) {
-                    clearTimeout(this.data.auto_off.timer)
-                    this.data.auto_off.timer = null
-                }
-                break
-            default:
-                this.debug(`Received unknown command for live stream`)
+                case 'off':
+                    // Manueller OFF: Flag zuruecksetzen und alle Sessions stoppen
+                    if (this.data.stream && this.data.stream.live) {
+                        this.data.stream.live.manual = false
+                    }
+
+                    if (this.data.stream.keepalive.session) {
+                        this.debug('Stopping the keepalive stream')
+                        this.data.stream.keepalive.session.kill()
+                        this.data.stream.keepalive.session = null
+                    } else if (this.data.stream.live.session) {
+                        this.data.stream.live.worker.postMessage({ command: 'stop' })
+                    } else {
+                        this.data.stream.live.status = 'inactive'
+                        this.publishStreamState()
+                    }
+                    // Auto-Off Timer abbrechen
+                    if (this.data.auto_off.timer) {
+                        clearTimeout(this.data.auto_off.timer)
+                        this.data.auto_off.timer = null
+                    }
+                    break
+
+                default:
+                    this.debug(`Received unknown command for live stream`)
+            }
         }
     }
 
     setLiveAllowState(message) {
         const command = message.toLowerCase()
         this.debug(`Received set live_allow state ${message}`)
+        if (command === 'on' || command === 'off') {
+            this.data.live_allow.state = (command === 'on') ? 'ON' : 'OFF'
+            this.publishLiveAllowState()
+            this.updateDeviceState()
 
-        if (command !== 'on' && command !== 'off') {
-            this.debug('Received unknown command for live_allow state')
-            return
-        }
-
-        this.data.live_allow.state = (command === 'on') ? 'ON' : 'OFF'
-        this.publishLiveAllowState()
-        this.updateDeviceState()
-
-        if (command === 'on') {
-            // Hauptschalter zum Starten des Live-Streams (manueller Modus)
-            if (this.data.stream.live.status === 'active' || this.data.stream.live.status === 'activating') {
-                this.debug('Live Allow ON -> Live Stream läuft bereits')
-                this.publishStreamState()
-                this.rescheduleAutoOff()
-                return
+            if (this.data.live_allow.state === 'OFF') {
+                // Kill-Switch: sobald Live Allow auf OFF geht,
+                // aktuellen Live-Stream SOFORT stoppen
+                this.debug('Live Allow OFF -> Kill-Switch: Live Stream wird sofort gestoppt')
+                this.setLiveStreamState('OFF')
+            } else {
+                // Live Allow ON: ermoeglicht ON-DEMAND-Start,
+                // selbst wird aber keinen Stream ohne Client starten.
+                this.debug('Live Allow ON -> ON-DEMAND-Start ist jetzt erlaubt (nur bei RTSP-Client-Anfrage)')
             }
+        }
+    }
 
-            this.debug('Live Allow ON -> starting live stream immediately (manual mode)')
-            this.data.stream.live.status = 'activating'
-            this.publishStreamState()
 
-            const rtspPublishUrl = (utils.config().livestream_user && utils.config().livestream_pass)
-                ? `rtsp://${utils.config().livestream_user}:${utils.config().livestream_pass}@localhost:8554/${this.deviceId}_live`
-                : `rtsp://localhost:8554/${this.deviceId}_live`
+        const command = message.toLowerCase()
+        this.debug(`Received set live_allow state ${message}`)
+        if (command === 'on' || command === 'off') {
+            this.data.live_allow.state = (command === 'on') ? 'ON' : 'OFF'
+            this.publishLiveAllowState()
+            this.updateDeviceState()
 
-            this.startLiveStream(rtspPublishUrl)
-            this.startKeepaliveStream()
-            this.rescheduleAutoOff()
-        } else {
-            // Kill-Switch: sobald Live Allow OFF -> Live Stream stoppen
-            this.debug('Live Allow OFF -> stopping live stream immediately (manual mode)')
-            this.setLiveStreamState('off')
+            // Kill-Switch: sobald Live Allow auf OFF geht,
+            // aktuellen Live-Stream SOFORT stoppen (inkl. manueller Flag)
+            if (this.data.live_allow.state === 'OFF') {
+                this.debug('Live Allow OFF -> Kill-Switch: Live Stream wird sofort gestoppt')
+                this.setLiveStreamState('OFF')
+            }
         }
     }
 
