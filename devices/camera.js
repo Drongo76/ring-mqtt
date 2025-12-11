@@ -1465,7 +1465,7 @@ publishEventSelectState(isPublish) {
     }
 
         const command = message.toLowerCase()
-        this.debug(`Received set live stream state ${message}`)
+        this.debug('Received set live stream state ' + message)
 
         if (command.startsWith('on-demand')) {
             // ON-DEMAND wird NUR akzeptiert, wenn Live Allow = ON (Kill-Switch nicht aktiv)
@@ -1525,7 +1525,7 @@ publishEventSelectState(isPublish) {
                     break;
 
                 default:
-                    this.debug(`Received unknown command for live stream`)
+                    this.debug('Received unknown command for live stream')
             }
         }
     }
@@ -1596,7 +1596,7 @@ publishEventSelectState(isPublish) {
     }
 
         const command = message.toLowerCase()
-        this.debug(`Received set live_allow state ${message}`)
+        this.debug('Received set live_allow state ' + message)
 
         if (command !== 'on' && command !== 'off') return
 
