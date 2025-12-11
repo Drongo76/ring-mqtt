@@ -1464,19 +1464,68 @@ publishEventSelectState(isPublish) {
     setLiveAllowState(message) {
         const command = message.toLowerCase()
         this.debug(`Received set live_allow state ${message}`)
-        if (command === 'on' || command === 'off') {
-            this.data.live_allow.state = (command === 'on') ? 'ON' : 'OFF'
-            this.publishLiveAllowState()
-            this.updateDeviceState()
 
-            // Kill-Switch: sobald Live Allow auf OFF geht,
-            // aktuellen Live-Stream SOFORT stoppen (inkl. manueller Flag)
-            if (this.data.live_allow.state === 'OFF') {
-                this.debug('Live Allow OFF -> Kill-Switch: Live Stream wird sofort gestoppt')
-                this.setLiveStreamState('OFF')
+        if (command !== 'on' && command !== 'off') return
+
+        const newState = (command === 'on') ? 'ON' : 'OFF'
+        this.data.live_allow.state = newState
+        this.publishLiveAllowState()
+        this.updateDeviceState()
+
+        if (newState === 'ON') {
+            // Live Allow ON = einziger Start-Trigger
+            this.debug('Live Allow ON -> erlaubt ON-DEMAND und triggert Start')
+
+            // manual-Flag setzen, damit ON-DEMAND akzeptiert wird
+            if (this.data.stream?.live) {
+                this.data.stream.live.manual = true
             }
+
+            // Keepalive starten, falls nichts läuft -> triggert go2rtc ON-DEMAND
+            if (this.data.stream?.keepalive &&
+                !this.data.stream.keepalive.session &&
+                !this.data.stream.keepalive.active) {
+                this.startKeepaliveStream()
+            }
+
+            this.rescheduleAutoOff()
+            this.publishStreamState()
+            return
+        }
+
+        // Live Allow OFF = Kill-Switch: sofort stoppen + blockieren
+        this.debug('Live Allow OFF -> Kill-Switch: Live Stream wird sofort gestoppt')
+
+        if (this.data.stream?.live) {
+            this.data.stream.live.manual = false
+        }
+
+        // Keepalive killen
+        if (this.data.stream?.keepalive?.session) {
+            const s = this.data.stream.keepalive.session
+            if (typeof s.kill === 'function') {
+                this.debug('Stopping the keepalive stream (Kill-Switch)')
+                s.kill()
+            }
+            this.data.stream.keepalive.session = null
+            this.data.stream.keepalive.active = false
+        }
+
+        // Live-Worker stoppen
+        if (this.data.stream?.live?.session) {
+            this.data.stream.live.worker.postMessage({ command: 'stop' })
+        } else if (this.data.stream?.live) {
+            this.data.stream.live.status = 'inactive'
+            this.publishStreamState()
+        }
+
+        // Auto-Off Timer abbrechen
+        if (this.data.auto_off?.timer) {
+            clearTimeout(this.data.auto_off.timer)
+            this.data.auto_off.timer = null
         }
     }
+
 
     setAutoOffEnabled(message) {
         const cmd = message.toLowerCase()
