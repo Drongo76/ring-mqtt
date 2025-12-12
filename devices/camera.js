@@ -1412,76 +1412,10 @@ publishEventSelectState(isPublish) {
                 return
             }
 
-            if (this.data.stream.live.status === 'active' || this.data.stream.live.status === 'activating') {
-                this.publishStreamState()
-                this.rescheduleAutoOff()
-            } else {
-                this.data.stream.live.status = 'activating'
-                this.publishStreamState()
-                this.rescheduleAutoOff()
-                // Portion nach dem Leerzeichen ist die RTSP-Publish-URL
-                this.startLiveStream(message.split(' ')[1])
-            }
-        } else {
-            switch (command) {
-                case 'on':
-                    // In diesem Fork ist der "Live Stream"-Schalter nur eine STATUS-Anzeige.
-                    // Zum Starten/Stoppen bitte ausschliesslich "Live Allow" verwenden.
-                    this.debug('Ignoring manual live stream ON command (Status-Schalter, bitte Live Allow verwenden)')
-                    break
+            const liveIsReallyRunning = (this.data.stream.live.session === true) &&
+                (this.data.stream.live.status === 'active' || this.data.stream.live.status === 'activating')
 
-                case 'off':
-                    // Manueller OFF: Flag zurücksetzen und alle Sessions stoppen
-                    if (this.data.stream && this.data.stream.live) {
-                        this.data.stream.live.manual = false
-                    }
-
-                    if (this.data.stream.keepalive && this.data.stream.keepalive.session) {
-                        const keepaliveSession = this.data.stream.keepalive.session
-                        if (typeof keepaliveSession.kill === 'function') {
-                            this.debug('Stopping the keepalive stream')
-                            keepaliveSession.kill()
-                        } else {
-                            this.debug('Keepalive session hat keine kill()-Methode, wird nur verworfen')
-                        }
-                        this.data.stream.keepalive.session = null
-                    } else if (this.data.stream.live.session) {
-                        this.data.stream.live.worker.postMessage({ command: 'stop' })
-                    } else {
-                        this.data.stream.live.status = 'inactive'
-                        this.publishStreamState()
-                    }
-                    // Auto-Off Timer abbrechen
-                    if (this.data.auto_off.timer) {
-                        clearTimeout(this.data.auto_off.timer)
-                        this.data.auto_off.timer = null
-                    }
-                    break
-
-                default:
-                    this.debug('Received unknown command for live stream')
-            }
-        }
-    }
-
-        const command = message.toLowerCase()
-        this.debug('Received set live stream state ' + message)
-
-        if (command.startsWith('on-demand')) {
-            // ON-DEMAND wird NUR akzeptiert, wenn Live Allow = ON (Kill-Switch nicht aktiv)
-            const liveAllowed = !this.data.live_allow || this.data.live_allow.state === 'ON'
-
-            if (!liveAllowed &&
-                this.data.stream.live.status !== 'active' &&
-                this.data.stream.live.status !== 'activating') {
-                this.debug('Blocking ON-DEMAND: Live Allow OFF -> kein Live-Stream-Start')
-                this.data.stream.live.status = 'inactive'
-                this.publishStreamState()
-                this.rescheduleAutoOff()
-                return
-            }
-
-            if (this.data.stream.live.status === 'active' || this.data.stream.live.status === 'activating') {
+            if (liveIsReallyRunning) {
                 this.publishStreamState()
                 this.rescheduleAutoOff()
             } else {
@@ -1525,76 +1459,12 @@ publishEventSelectState(isPublish) {
                     break;
 
                 default:
-                    this.debug('Received unknown command for live stream')
+                    this.debug(`Received unknown command for live stream`)
             }
         }
     }
 
     setLiveAllowState(message) {
-        const command = message.toLowerCase()
-        this.debug('Received set live_allow state ' + message)
-
-        if (command !== 'on' && command !== 'off') return
-
-        const newState = (command === 'on') ? 'ON' : 'OFF'
-        this.data.live_allow.state = newState
-        this.publishLiveAllowState()
-        this.updateDeviceState()
-
-        if (newState === 'ON') {
-            // Live Allow ON = Start-Trigger
-            this.debug('Live Allow ON -> erlaubt ON-DEMAND und triggert Start')
-
-            // manual-Flag setzen, damit ON-DEMAND akzeptiert wird
-            if (this.data.stream?.live) {
-                this.data.stream.live.manual = true
-            }
-
-            // Keepalive starten, falls nichts läuft -> triggert go2rtc ON-DEMAND
-            if (this.data.stream?.keepalive &&
-                !this.data.stream.keepalive.session &&
-                !this.data.stream.keepalive.active) {
-                this.startKeepaliveStream()
-            }
-
-            this.rescheduleAutoOff()
-            this.publishStreamState()
-            return
-        }
-
-        // Live Allow OFF = Kill-Switch: sofort stoppen + blockieren
-        this.debug('Live Allow OFF -> Kill-Switch: Live Stream wird sofort gestoppt')
-
-        if (this.data.stream?.live) {
-            this.data.stream.live.manual = false
-        }
-
-        // Keepalive killen
-        if (this.data.stream?.keepalive?.session) {
-            const s = this.data.stream.keepalive.session
-            if (typeof s.kill === 'function') {
-                this.debug('Stopping the keepalive stream (Kill-Switch)')
-                s.kill()
-            }
-            this.data.stream.keepalive.session = null
-            this.data.stream.keepalive.active = false
-        }
-
-        // Live-Worker stoppen
-        if (this.data.stream?.live?.session) {
-            this.data.stream.live.worker.postMessage({ command: 'stop' })
-        } else if (this.data.stream?.live) {
-            this.data.stream.live.status = 'inactive'
-            this.publishStreamState()
-        }
-
-        // Auto-Off Timer abbrechen
-        if (this.data.auto_off?.timer) {
-            clearTimeout(this.data.auto_off.timer)
-            this.data.auto_off.timer = null
-        }
-    }
-
         const command = message.toLowerCase()
         this.debug('Received set live_allow state ' + message)
 
@@ -1644,15 +1514,21 @@ publishEventSelectState(isPublish) {
             this.data.stream.keepalive.active = false
         }
 
-        // Live-Worker stoppen
-        if (this.data.stream?.live?.session) {
-            this.data.stream.live.worker.postMessage({ command: 'stop' })
-        } else if (this.data.stream?.live) {
+        // Live-Worker stoppen (immer) + Status sofort auf inactive setzen,
+        // damit ON-DEMAND nach einem Kill wieder sauber starten kann.
+        if (this.data.stream?.live) {
             this.data.stream.live.status = 'inactive'
-            this.publishStreamState()
+            this.data.stream.live.session = false
+            this.data.stream.live.publishedStatus = ''
+            this.publishStreamState(true)
         }
 
-        // Auto-Off Timer abbrechen
+        if (this.data.stream?.live?.worker) {
+            this.data.stream.live.worker.postMessage({ command: 'stop' })
+        }
+
+
+// Auto-Off Timer abbrechen
         if (this.data.auto_off?.timer) {
             clearTimeout(this.data.auto_off.timer)
             this.data.auto_off.timer = null
