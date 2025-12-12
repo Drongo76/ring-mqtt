@@ -70,6 +70,7 @@ export default class Camera extends RingPolledDevice {
                     status: 'inactive',
                     session: false,
                     publishedStatus: '',
+                    worker_exited: false,
                     worker: new Worker('./devices/camera-livestream.js', {
                         workerData: {
                             doorbotId: this.device.id,
@@ -303,6 +304,22 @@ export default class Camera extends RingPolledDevice {
                 }
             }
         })
+
+        // --- DIAG: observe worker lifecycle (crash/exit) ---
+        this.data.stream.live.worker.on('error', (err) => {
+            this.debug('LIVE WORKER error: ' + (err && err.stack ? err.stack : err))
+            this.data.stream.live.worker_exited = true
+        })
+        this.data.stream.live.worker.on('exit', (code) => {
+            this.debug('LIVE WORKER exit with code ' + code)
+            this.data.stream.live.worker_exited = true
+            // If worker dies, mark stream inactive so next ON-DEMAND can recreate cleanly
+            this.data.stream.live.status = 'inactive'
+            this.data.stream.live.session = false
+            this.publishStreamState(true)
+        })
+
+        this.debug('*** LIVEALLOW_DIAG_BUILD worker-recreate enabled ***')
 
         this.device.onNewNotification.subscribe(notification => {
             this.processNotification(notification)
@@ -902,7 +919,67 @@ publishEventSelectState(isPublish) {
 
         if (streamData.ticket) {
             this.debug('Live stream WebRTC signaling session ticket acquired, starting live stream worker')
-            this.data.stream.live.worker.postMessage({ command: 'start', streamData })
+
+            // --- DIAG/FIX: recreate worker if it exited or got stuck after a stop ---
+            let w = this.data.stream.live.worker
+            if (!w || this.data.stream.live.worker_exited) {
+                this.debug('Live stream worker missing/exited -> recreating fresh worker')
+                try { if (w) { w.terminate() } } catch (e) { /* ignore */ }
+
+                w = new Worker('./devices/camera-livestream.js', {
+                    workerData: {
+                        doorbotId: this.device.id,
+                        deviceName: this.deviceData.name
+                    }
+                })
+
+                this.data.stream.live.worker = w
+                this.data.stream.live.worker_exited = false
+
+                // Re-attach worker message handlers (same as in constructor)
+                w.on('message', (message) => {
+                    if (message.type === 'state') {
+                        switch (message.data) {
+                            case 'active':
+                                this.data.stream.live.status = 'active'
+                                this.data.stream.live.session = true
+                                break;
+                            case 'inactive':
+                                this.data.stream.live.status = 'inactive'
+                                this.data.stream.live.session = false
+                                break;
+                            case 'failed':
+                                this.data.stream.live.status = 'failed'
+                                this.data.stream.live.session = false
+                                break;
+                        }
+                        this.publishStreamState()
+                    } else {
+                        switch (message.type) {
+                            case 'log_info':
+                                this.debug(message.data, 'wrtc')
+                                break;
+                            case 'log_error':
+                                this.debug(chalk.redBright(message.data), 'wrtc')
+                                break;
+                        }
+                    }
+                })
+
+                w.on('error', (err) => {
+                    this.debug('LIVE WORKER error: ' + (err && err.stack ? err.stack : err))
+                    this.data.stream.live.worker_exited = true
+                })
+                w.on('exit', (code) => {
+                    this.debug('LIVE WORKER exit with code ' + code)
+                    this.data.stream.live.worker_exited = true
+                    this.data.stream.live.status = 'inactive'
+                    this.data.stream.live.session = false
+                    this.publishStreamState(true)
+                })
+            }
+
+            w.postMessage({ command: 'start', streamData })
         } else {
             this.debug('Live stream failed to initialize WebRTC signaling session')
             this.data.stream.live.status = 'failed'
@@ -1446,7 +1523,27 @@ publishEventSelectState(isPublish) {
                         this.debug('Keepalive session hat keine kill()-Methode, setze sie zurueck')
                         this.data.stream.keepalive.session = null
                     } else if (this.data.stream.live.session) {
-                        this.data.stream.live.worker.postMessage({ command: 'stop' })
+                        const w = this.data.stream.live.worker
+            if (w) {
+                this.debug('Sending stop to live worker (Kill-Switch)')
+                w.postMessage({ command: 'stop' })
+
+                // If the worker does not report "inactive" quickly, force-terminate it so a later ON can recreate cleanly.
+                setTimeout(() => {
+                    try {
+                        if (this.data.stream.live.status !== 'inactive' && !this.data.stream.live.worker_exited) {
+                            this.debug('Live worker did not stop cleanly -> terminating worker as fallback')
+                            w.terminate()
+                            this.data.stream.live.worker_exited = true
+                            this.data.stream.live.status = 'inactive'
+                            this.data.stream.live.session = false
+                            this.publishStreamState(true)
+                        }
+                    } catch (e) {
+                        this.debug('Fallback terminate failed: ' + e)
+                    }
+                }, 4000)
+            }
                     } else {
                         this.data.stream.live.status = 'inactive'
                         this.publishStreamState()
@@ -1524,7 +1621,27 @@ publishEventSelectState(isPublish) {
         }
 
         if (this.data.stream?.live?.worker) {
-            this.data.stream.live.worker.postMessage({ command: 'stop' })
+            const w = this.data.stream.live.worker
+            if (w) {
+                this.debug('Sending stop to live worker (Kill-Switch)')
+                w.postMessage({ command: 'stop' })
+
+                // If the worker does not report "inactive" quickly, force-terminate it so a later ON can recreate cleanly.
+                setTimeout(() => {
+                    try {
+                        if (this.data.stream.live.status !== 'inactive' && !this.data.stream.live.worker_exited) {
+                            this.debug('Live worker did not stop cleanly -> terminating worker as fallback')
+                            w.terminate()
+                            this.data.stream.live.worker_exited = true
+                            this.data.stream.live.status = 'inactive'
+                            this.data.stream.live.session = false
+                            this.publishStreamState(true)
+                        }
+                    } catch (e) {
+                        this.debug('Fallback terminate failed: ' + e)
+                    }
+                }, 4000)
+            }
         }
 
 
