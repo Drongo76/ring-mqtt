@@ -70,7 +70,8 @@ export default class Camera extends RingPolledDevice {
                     status: 'inactive',
                     session: false,
                     publishedStatus: '',
-                    worker_exited: false,
+                    pendingOnDemandUrl: null,
+                    pendingOnDemandAt: 0,
                     worker: new Worker('./devices/camera-livestream.js', {
                         workerData: {
                             doorbotId: this.device.id,
@@ -304,22 +305,6 @@ export default class Camera extends RingPolledDevice {
                 }
             }
         })
-
-        // --- DIAG: observe worker lifecycle (crash/exit) ---
-        this.data.stream.live.worker.on('error', (err) => {
-            this.debug('LIVE WORKER error: ' + (err && err.stack ? err.stack : err))
-            this.data.stream.live.worker_exited = true
-        })
-        this.data.stream.live.worker.on('exit', (code) => {
-            this.debug('LIVE WORKER exit with code ' + code)
-            this.data.stream.live.worker_exited = true
-            // If worker dies, mark stream inactive so next ON-DEMAND can recreate cleanly
-            this.data.stream.live.status = 'inactive'
-            this.data.stream.live.session = false
-            this.publishStreamState(true)
-        })
-
-        this.debug('*** LIVEALLOW_DIAG_BUILD worker-recreate enabled ***')
 
         this.device.onNewNotification.subscribe(notification => {
             this.processNotification(notification)
@@ -919,67 +904,7 @@ publishEventSelectState(isPublish) {
 
         if (streamData.ticket) {
             this.debug('Live stream WebRTC signaling session ticket acquired, starting live stream worker')
-
-            // --- DIAG/FIX: recreate worker if it exited or got stuck after a stop ---
-            let w = this.data.stream.live.worker
-            if (!w || this.data.stream.live.worker_exited) {
-                this.debug('Live stream worker missing/exited -> recreating fresh worker')
-                try { if (w) { w.terminate() } } catch (e) { /* ignore */ }
-
-                w = new Worker('./devices/camera-livestream.js', {
-                    workerData: {
-                        doorbotId: this.device.id,
-                        deviceName: this.deviceData.name
-                    }
-                })
-
-                this.data.stream.live.worker = w
-                this.data.stream.live.worker_exited = false
-
-                // Re-attach worker message handlers (same as in constructor)
-                w.on('message', (message) => {
-                    if (message.type === 'state') {
-                        switch (message.data) {
-                            case 'active':
-                                this.data.stream.live.status = 'active'
-                                this.data.stream.live.session = true
-                                break;
-                            case 'inactive':
-                                this.data.stream.live.status = 'inactive'
-                                this.data.stream.live.session = false
-                                break;
-                            case 'failed':
-                                this.data.stream.live.status = 'failed'
-                                this.data.stream.live.session = false
-                                break;
-                        }
-                        this.publishStreamState()
-                    } else {
-                        switch (message.type) {
-                            case 'log_info':
-                                this.debug(message.data, 'wrtc')
-                                break;
-                            case 'log_error':
-                                this.debug(chalk.redBright(message.data), 'wrtc')
-                                break;
-                        }
-                    }
-                })
-
-                w.on('error', (err) => {
-                    this.debug('LIVE WORKER error: ' + (err && err.stack ? err.stack : err))
-                    this.data.stream.live.worker_exited = true
-                })
-                w.on('exit', (code) => {
-                    this.debug('LIVE WORKER exit with code ' + code)
-                    this.data.stream.live.worker_exited = true
-                    this.data.stream.live.status = 'inactive'
-                    this.data.stream.live.session = false
-                    this.publishStreamState(true)
-                })
-            }
-
-            w.postMessage({ command: 'start', streamData })
+            this.data.stream.live.worker.postMessage({ command: 'start', streamData })
         } else {
             this.debug('Live stream failed to initialize WebRTC signaling session')
             this.data.stream.live.status = 'failed'
@@ -1483,6 +1408,10 @@ publishEventSelectState(isPublish) {
                 this.data.stream.live.status !== 'active' &&
                 this.data.stream.live.status !== 'activating') {
                 this.debug('Blocking ON-DEMAND: Live Allow OFF -> kein Live-Stream-Start')
+                // Merke die aktuelle ON-DEMAND Anfrage (RTSP Publish URL), damit wir bei Live Allow ON
+                // sofort starten koennen, ohne auf go2rtc-Timeout/Retry warten zu muessen.
+                this.data.stream.live.pendingOnDemandUrl = message.split(' ')[1] || null
+                this.data.stream.live.pendingOnDemandAt = Date.now()
                 this.data.stream.live.status = 'inactive'
                 this.publishStreamState()
                 this.rescheduleAutoOff()
@@ -1523,27 +1452,7 @@ publishEventSelectState(isPublish) {
                         this.debug('Keepalive session hat keine kill()-Methode, setze sie zurueck')
                         this.data.stream.keepalive.session = null
                     } else if (this.data.stream.live.session) {
-                        const w = this.data.stream.live.worker
-            if (w) {
-                this.debug('Sending stop to live worker (Kill-Switch)')
-                w.postMessage({ command: 'stop' })
-
-                // If the worker does not report "inactive" quickly, force-terminate it so a later ON can recreate cleanly.
-                setTimeout(() => {
-                    try {
-                        if (this.data.stream.live.status !== 'inactive' && !this.data.stream.live.worker_exited) {
-                            this.debug('Live worker did not stop cleanly -> terminating worker as fallback')
-                            w.terminate()
-                            this.data.stream.live.worker_exited = true
-                            this.data.stream.live.status = 'inactive'
-                            this.data.stream.live.session = false
-                            this.publishStreamState(true)
-                        }
-                    } catch (e) {
-                        this.debug('Fallback terminate failed: ' + e)
-                    }
-                }, 4000)
-            }
+                        this.data.stream.live.worker.postMessage({ command: 'stop' })
                     } else {
                         this.data.stream.live.status = 'inactive'
                         this.publishStreamState()
@@ -1581,6 +1490,28 @@ publishEventSelectState(isPublish) {
                 this.data.stream.live.manual = true
             }
 
+            // Falls kurz zuvor ein ON-DEMAND Versuch geblockt wurde (Live Allow war OFF),
+            // laeuft go2rtc/start-stream.sh ggf. noch und wartet bis zum Timeout.
+            // Wenn wir jetzt auf ON schalten, starten wir sofort mit der gemerkten Publish-URL.
+            if (this.data.stream?.live?.pendingOnDemandUrl) {
+                const ageMs = Date.now() - (this.data.stream.live.pendingOnDemandAt || 0)
+                if (ageMs >= 0 && ageMs < 55000 &&
+                    this.data.stream.live.status !== 'active' && this.data.stream.live.status !== 'activating') {
+                    const url = this.data.stream.live.pendingOnDemandUrl
+                    this.debug('Live Allow ON -> benutze gemerkte ON-DEMAND Publish-URL, starte sofort: ' + url)
+                    this.data.stream.live.pendingOnDemandUrl = null
+                    this.data.stream.live.pendingOnDemandAt = 0
+                    this.data.stream.live.status = 'activating'
+                    this.publishStreamState()
+                    this.rescheduleAutoOff()
+                    this.startLiveStream(url)
+                } else if (ageMs >= 55000) {
+                    // zu alt -> verwerfen
+                    this.data.stream.live.pendingOnDemandUrl = null
+                    this.data.stream.live.pendingOnDemandAt = 0
+                }
+            }
+
             // Keepalive starten, falls nichts läuft -> triggert go2rtc ON-DEMAND
             if (this.data.stream?.keepalive &&
                 !this.data.stream.keepalive.session &&
@@ -1598,6 +1529,12 @@ publishEventSelectState(isPublish) {
 
         if (this.data.stream?.live) {
             this.data.stream.live.manual = false
+        }
+
+        // pending ON-DEMAND Anfrage verwerfen
+        if (this.data.stream?.live) {
+            this.data.stream.live.pendingOnDemandUrl = null
+            this.data.stream.live.pendingOnDemandAt = 0
         }
 
         // Keepalive killen
@@ -1621,27 +1558,7 @@ publishEventSelectState(isPublish) {
         }
 
         if (this.data.stream?.live?.worker) {
-            const w = this.data.stream.live.worker
-            if (w) {
-                this.debug('Sending stop to live worker (Kill-Switch)')
-                w.postMessage({ command: 'stop' })
-
-                // If the worker does not report "inactive" quickly, force-terminate it so a later ON can recreate cleanly.
-                setTimeout(() => {
-                    try {
-                        if (this.data.stream.live.status !== 'inactive' && !this.data.stream.live.worker_exited) {
-                            this.debug('Live worker did not stop cleanly -> terminating worker as fallback')
-                            w.terminate()
-                            this.data.stream.live.worker_exited = true
-                            this.data.stream.live.status = 'inactive'
-                            this.data.stream.live.session = false
-                            this.publishStreamState(true)
-                        }
-                    } catch (e) {
-                        this.debug('Fallback terminate failed: ' + e)
-                    }
-                }, 4000)
-            }
+            this.data.stream.live.worker.postMessage({ command: 'stop' })
         }
 
 
