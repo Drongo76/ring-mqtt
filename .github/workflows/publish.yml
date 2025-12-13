@@ -1,4 +1,4 @@
-name: Build & Publish GHCR
+name: Build & Publish GHCR (stable)
 
 on:
   push:
@@ -11,6 +11,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+
     steps:
       - uses: actions/checkout@v4
 
