@@ -11,29 +11,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    concurrency:
-      group: ring-mqtt-docker-image-${{ github.ref }}
-      cancel-in-progress: true
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            image: ghcr.io/drongo76/ring-mqtt-amd64
-            tag: 5.9.1
-            allow_fail: false
-          - platform: linux/arm64
-            image: ghcr.io/drongo76/ring-mqtt-aarch64
-            tag: 5.9.1
-            allow_fail: false
-          - platform: linux/arm/v7
-            image: ghcr.io/drongo76/ring-mqtt-armv7
-            tag: 5.9.1
-            allow_fail: true
-          - platform: linux/arm/v6
-            image: ghcr.io/drongo76/ring-mqtt-armhf
-            tag: 5.9.1
-            allow_fail: true
 
     steps:
       - name: Checkout
@@ -41,28 +18,61 @@ jobs:
 
       - name: Set up QEMU (multi-arch)
         uses: docker/setup-qemu-action@v3
-        with:
-          image: tonistiigi/binfmt:latest
-          platforms: arm64,arm
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Log in to GHCR (PAT)
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Build & push (${{ matrix.platform }})
-        continue-on-error: ${{ matrix.allow_fail }}
+      # ---- amd64 ----
+      - name: Build & push amd64
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          platforms: ${{ matrix.platform }}
+          platforms: linux/amd64
           tags: |
-            ${{ matrix.image }}:${{ matrix.tag }}
+            ghcr.io/drongo76/ring-mqtt-amd64:5.9.1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- aarch64 ----
+      - name: Build & push aarch64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm64
+          tags: |
+            ghcr.io/drongo76/ring-mqtt-aarch64:5.9.1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- armv7 ----
+      - name: Build & push armv7
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm/v7
+          tags: |
+            ghcr.io/drongo76/ring-mqtt-armv7:5.9.1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- armhf (arm/v6) ----
+      - name: Build & push armhf
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm/v6
+          tags: |
+            ghcr.io/drongo76/ring-mqtt-armhf:5.9.1
           cache-from: type=gha
           cache-to: type=gha,mode=max
