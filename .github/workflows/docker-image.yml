@@ -1,0 +1,90 @@
+name: Build and Push ring-mqtt HA images (stable)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+        with:
+          image: tonistiigi/binfmt:latest
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR (PAT)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Build & push amd64
+        run: |
+          set -euo pipefail
+          docker buildx build --progress=plain \
+            --platform linux/amd64 \
+            --push \
+            -t ghcr.io/drongo76/ring-mqtt-amd64:5.9.2 \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            .
+
+      - name: Build & push aarch64
+        run: |
+          set -euo pipefail
+          docker buildx build --progress=plain \
+            --platform linux/arm64 \
+            --push \
+            -t ghcr.io/drongo76/ring-mqtt-aarch64:5.9.2 \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            .
+
+      - name: Build & push armv7 (retry up to 5x)
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            echo "armv7 build attempt ${i}/5"
+            if docker buildx build --progress=plain \
+              --platform linux/arm/v7 \
+              --push \
+              -t ghcr.io/drongo76/ring-mqtt-armv7:5.9.2 \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              .; then
+              exit 0
+            fi
+            sleep $((i*15))
+          done
+          exit 1
+
+      - name: Build & push armhf (arm/v6) (retry up to 5x)
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            echo "armhf build attempt ${i}/5"
+            if docker buildx build --progress=plain \
+              --platform linux/arm/v6 \
+              --push \
+              -t ghcr.io/drongo76/ring-mqtt-armhf:5.9.2 \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              .; then
+              exit 0
+            fi
+            sleep $((i*20))
+          done
+          exit 1
