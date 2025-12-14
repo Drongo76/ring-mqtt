@@ -1,4 +1,4 @@
-name: docker-image
+name: Build and Push ring-mqtt HA images (stable)
 
 on:
   push:
@@ -29,10 +29,53 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Build & push (ONE tag, multi-arch)
+      # ---- Build & push per-arch images (same style as your current stable workflow) ----
+      - name: Build & push amd64
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
-          tags: ghcr.io/drongo76/ring-mqtt:build-${{ github.run_number }}
+          platforms: linux/amd64
+          tags: ghcr.io/drongo76/ring-mqtt-amd64:build-${{ github.run_number }}
+
+      - name: Build & push aarch64 (arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm64
+          tags: ghcr.io/drongo76/ring-mqtt-aarch64:build-${{ github.run_number }}
+
+      - name: Build & push armv7
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm/v7
+          tags: ghcr.io/drongo76/ring-mqtt-armv7:build-${{ github.run_number }}
+
+      - name: Build & push armhf (arm/v6)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm/v6
+          tags: ghcr.io/drongo76/ring-mqtt-armhf:build-${{ github.run_number }}
+
+      # ---- Create ONE multi-arch tag that HA can use: ghcr.io/drongo76/ring-mqtt:build-N ----
+      - name: Create multi-arch manifest tag (ONE image)
+        run: |
+          set -euo pipefail
+          TAG="build-${{ github.run_number }}"
+
+          docker buildx imagetools create \
+            -t ghcr.io/drongo76/ring-mqtt:${TAG} \
+            ghcr.io/drongo76/ring-mqtt-amd64:${TAG} \
+            ghcr.io/drongo76/ring-mqtt-aarch64:${TAG} \
+            ghcr.io/drongo76/ring-mqtt-armv7:${TAG} \
+            ghcr.io/drongo76/ring-mqtt-armhf:${TAG}
+
+      - name: Inspect manifest
+        run: |
+          TAG="build-${{ github.run_number }}"
+          docker buildx imagetools inspect ghcr.io/drongo76/ring-mqtt:${TAG}
