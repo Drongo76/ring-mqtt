@@ -721,8 +721,11 @@ export default class Camera extends RingPolledDevice {
     }
 
 
-    publishStreamState(isPublish) {
+    publishStreamState(isPublish, onlyType) {
         ['live', 'event'].forEach(type => {
+            if (onlyType && type !== onlyType) {
+                return
+            }
             const entityProp = (type === 'live') ? 'stream' : `${type}_stream`
             if (this.entity.hasOwnProperty(entityProp)) {
                 const streamState =
@@ -1413,7 +1416,7 @@ publishEventSelectState(isPublish) {
                 this.data.stream.live.pendingOnDemandUrl = message.split(' ')[1] || null
                 this.data.stream.live.pendingOnDemandAt = Date.now()
                 this.data.stream.live.status = 'inactive'
-                this.publishStreamState(true)
+                this.publishStreamState(true, 'live')
                 this.rescheduleAutoOff()
                 return
             }
@@ -1554,7 +1557,7 @@ publishEventSelectState(isPublish) {
             this.data.stream.live.status = 'inactive'
             this.data.stream.live.session = false
             this.data.stream.live.publishedStatus = ''
-            this.publishStreamState(true)
+            this.publishStreamState(true, 'live')
         }
 
         if (this.data.stream?.live?.worker) {
