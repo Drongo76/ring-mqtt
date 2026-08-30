@@ -16,9 +16,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -29,14 +26,14 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push multi-arch image
+      - name: Build and push amd64 image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
+          platforms: linux/amd64
           tags: ghcr.io/drongo76/ring-mqtt-custom:build-${{ github.run_number }}
 
-      - name: Inspect multi-arch manifest
+      - name: Inspect image
         run: |
           docker buildx imagetools inspect ghcr.io/drongo76/ring-mqtt-custom:build-${{ github.run_number }}
