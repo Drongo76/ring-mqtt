@@ -6,6 +6,9 @@ import { spawn } from 'child_process'
 import { parseISO, addSeconds } from 'date-fns';
 import chalk from 'chalk'
 
+const recordingUrlRetryInterval = 1
+const recordingUrlRetryAttempts = 120
+
 export default class Camera extends RingPolledDevice {
     constructor(deviceInfo, events) {
         super(deviceInfo, 'camera')
@@ -125,6 +128,11 @@ export default class Camera extends RingPolledDevice {
                 }
             } : {}
         }
+
+        // Keep one bounded URL lookup per Ring event.  The event ID makes
+        // back-to-back motion events independent and prevents an older clip
+        // from replacing a newer Motion 1 recording when it finishes later.
+        this.recordingUrlRefreshes = new Map()
 
         this.entity = {
             ...this.entity,
@@ -553,6 +561,15 @@ export default class Camera extends RingPolledDevice {
         this.data[dingKind].last_ding_time = pushData.data?.event?.ding?.created_at
         this.data[dingKind].last_ding_expires = this.data[dingKind].last_ding+this.data[dingKind].duration
 
+        // Ring includes the exact event ID in the realtime notification.
+        // Start looking up that recording immediately instead of waiting for
+        // the regular ~1 minute event-history poll.
+        const eventId = pushData.data?.event?.ding?.id?.toString()
+        if (eventId) {
+            this.data[dingKind].latestEventId = eventId
+            this.refreshRecordingUrlFromNotification(dingKind, eventId)
+        }
+
         // If motion ding and snapshots on motion are enabled, publish a new snapshot
         if (dingKind === 'motion') {
             this.data[dingKind].is_person = Boolean(pushData.data?.event?.ding?.detection_type === 'human')
@@ -799,6 +816,82 @@ publishEventSelectState(isPublish) {
             eventId: this.data.event_select.eventId
         }
         this.mqttPublish(this.entity.event_select.json_attributes_topic, JSON.stringify(attributes), 'attr', '<recording_url_masked>')
+    }
+
+    refreshRecordingUrlFromNotification(eventType, eventId) {
+        if (!this.entity.hasOwnProperty('event_select') || this.recordingUrlRefreshes.has(eventId)) {
+            return
+        }
+
+        const refresh = this.pollRecordingUrl(eventType, eventId)
+            .catch(error => {
+                this.debug(`Immediate recording lookup failed for ${eventType} event ${eventId}`)
+                this.debug(error)
+            })
+            .finally(() => this.recordingUrlRefreshes.delete(eventId))
+
+        this.recordingUrlRefreshes.set(eventId, refresh)
+    }
+
+    async pollRecordingUrl(eventType, eventId) {
+        this.debug(`Immediately checking recording URL for ${eventType} event ${eventId}`)
+
+        for (let attempt = 1; attempt <= recordingUrlRetryAttempts; attempt++) {
+            let recordingUrl
+
+            try {
+                recordingUrl = await this.device.getRecordingUrl(eventId, { transcoded: false })
+            } catch {
+                // A new Ring recording normally returns an error until its URL
+                // is available.  Retry quietly to avoid filling the add-on log.
+            }
+
+            if (typeof recordingUrl === 'string' && recordingUrl.startsWith('http')) {
+                const eventSelect = this.data.event_select.state.split(' ')
+                const selectedType = eventSelect[0].toLowerCase().replace('-', '_')
+                const selectedNumber = Number(eventSelect[1])
+                const selectedTranscoded = Boolean(eventSelect[2] === '(Transcoded)')
+                const isLatestEvent = this.data[eventType].latestEventId === eventId
+
+                // Motion 1/Ding 1 must always refer to the newest exact event.
+                // A slower older lookup is allowed to finish, but never to
+                // overwrite the newer event selected in Home Assistant.
+                if (selectedType === eventType && selectedNumber === 1 && !selectedTranscoded && isLatestEvent) {
+                    this.setEventRecordingUrl(recordingUrl, eventId, false)
+                    this.publishEventSelectState()
+                }
+
+                this.debug(`Recording URL for ${eventType} event ${eventId} became available after ${attempt} attempt(s)`)
+                return recordingUrl
+            }
+
+            if (attempt < recordingUrlRetryAttempts) {
+                await utils.sleep(recordingUrlRetryInterval)
+            }
+        }
+
+        this.debug(`Recording URL for ${eventType} event ${eventId} was not available after ${recordingUrlRetryAttempts} seconds`)
+        return false
+    }
+
+    setEventRecordingUrl(recordingUrl, eventId, transcoded) {
+        this.data.event_select.recordingUrl = recordingUrl
+        this.data.event_select.transcoded = transcoded
+        this.data.event_select.eventId = eventId
+
+        try {
+            const urlSearch = new URL(recordingUrl).searchParams
+            const amzExpires = Number(urlSearch.get('X-Amz-Expires'))
+            const amzDate = parseISO(urlSearch.get('X-Amz-Date'))
+            const refreshAt = addSeconds(amzDate, amzExpires/3*2).getTime()
+
+            if (!Number.isFinite(refreshAt)) {
+                throw new Error('Recording URL has no usable expiry')
+            }
+            this.data.event_select.recordingUrlExpire = refreshAt
+        } catch {
+            this.data.event_select.recordingUrlExpire = Date.now() + 600000
+        }
     }
 
     publishDingDurationState(isPublish) {
@@ -1067,18 +1160,7 @@ publishEventSelectState(isPublish) {
         }
 
         if (recordingUrl) {
-            this.data.event_select.recordingUrl = recordingUrl
-            this.data.event_select.transcoded = transcoded
-            this.data.event_select.eventId = selectedEvent.event_id
-
-            try {
-                const urlSearch = new URLSearchParams(recordingUrl)
-                const amzExpires = Number(urlSearch.get('X-Amz-Expires'))
-                const amzDate = parseISO(urlSearch.get('X-Amz-Date'))
-                this.data.event_select.recordingUrlExpire = Date.parse(addSeconds(amzDate, amzExpires/3*2))
-            } catch {
-                this.data.event_select.recordingUrlExpire = Date.now() + 600000
-            }
+            this.setEventRecordingUrl(recordingUrl, selectedEvent.event_id, transcoded)
         } else if (urlExpired || !selectedEvent) {
             this.data.event_select.recordingUrl = '<Recording Not Found>'
             this.data.event_select.transcoded = transcoded
