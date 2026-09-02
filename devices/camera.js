@@ -1040,7 +1040,9 @@ publishEventSelectState(isPublish) {
         const eventSelect = this.data.event_select.state.split(' ')
         const eventType = eventSelect[0].toLowerCase().replace('-', '_')
         const eventNumber = eventSelect[1]
-        const transcoded = Boolean(eventSelect[2] === '(Transcoded)')
+        // HEVC recordings are not supported by every Home Assistant browser (notably Firefox).
+        // Request Ring's H.264 transcode automatically for HEVC cameras, even when a raw option is selected.
+        const transcoded = Boolean(eventSelect[2] === '(Transcoded)' || this.hevcEnabled)
         const urlExpired = this.data.event_select.recordingUrlExpire < Date.now()
         let selectedEvent
         let recordingUrl = false
