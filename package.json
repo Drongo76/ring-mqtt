@@ -27,7 +27,7 @@
     "globals": "^16.5.0"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test test/snapshot-refresh.test.js",
     "start": "node ring-mqtt.js"
   },
   "keywords": [

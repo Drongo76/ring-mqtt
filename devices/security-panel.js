@@ -150,7 +150,7 @@ export default class SecurityPanel extends RingSocketDevice {
         this.data.attributes[`${attrPrefix}By`] = initiatingUser
         this.data.attributes[`${attrPrefix}Time`] = message?.context?.eventOccurredTsMs
             ? new Date(message.context.eventOccurredTsMs).toISOString()
-            : new Date(now).toISOString()
+            : new Date().toISOString()
     }
 
     async processAlarmMode(message) {
