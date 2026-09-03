@@ -2,7 +2,7 @@ name: Build and Push ring-mqtt HA image
 
 on:
   push:
-    branches: [ "main", "fix/distinct-snapshots" ]
+    branches: [ "main" ]
   workflow_dispatch: {}
 
 jobs:
