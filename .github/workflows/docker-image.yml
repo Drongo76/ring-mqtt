@@ -40,7 +40,7 @@ jobs:
         shell: bash
         run: |
           if [ "${GITHUB_REF_NAME}" = "fix/distinct-snapshots" ]; then
-            echo "tag=ghcr.io/drongo76/ring-mqtt-custom:build-13" >> "$GITHUB_OUTPUT"
+            echo "tag=ghcr.io/drongo76/ring-mqtt-custom:build-14" >> "$GITHUB_OUTPUT"
           else
             echo "tag=ghcr.io/drongo76/ring-mqtt-custom:build-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           fi

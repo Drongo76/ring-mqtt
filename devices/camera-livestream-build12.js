@@ -44,13 +44,13 @@ async function startLive(data) {
     const session = new Build12StreamingSession(cameraData, connection)
     active = { id, kind: 'live', requestId: data.requestId, session }
 
-    post('log_info', { data: 'Build-13 live worker starting WebRTC session' })
+    post('log_info', { data: 'Build-14 live worker starting WebRTC session' })
 
     session.connection.pc.onConnectionState.subscribe(async state => {
         if (!isCurrent(id)) return
         if (state === 'connected') {
             post('state', { kind: 'live', data: 'active', requestId: data.requestId })
-            post('log_info', { data: 'Build-13 live WebRTC session connected' })
+            post('log_info', { data: 'Build-14 live WebRTC session connected' })
         } else if (state === 'failed') {
             post('state', { kind: 'live', data: 'failed', requestId: data.requestId })
             await stopActive('connection-failed')
@@ -61,7 +61,7 @@ async function startLive(data) {
         if (!isCurrent(id)) return
         active = null
         post('state', { kind: 'live', data: 'inactive', requestId: data.requestId })
-        post('log_info', { data: 'Build-13 live WebRTC session ended' })
+        post('log_info', { data: 'Build-14 live WebRTC session ended' })
     })
 
     try {
@@ -81,7 +81,7 @@ async function startLive(data) {
                 data.streamData.rtspPublishUrl
             ]
         })
-        if (isCurrent(id)) post('log_info', { data: 'Build-13 live ffmpeg process started' })
+        if (isCurrent(id)) post('log_info', { data: 'Build-14 live ffmpeg process started' })
     } catch (error) {
         if (!isCurrent(id)) return
         post('log_error', { data: error?.stack || error?.message || String(error) })
@@ -120,15 +120,33 @@ async function startBurst(data) {
         return
     }
 
+    result.frames.forEach((_, index) => {
+        const pts = result.framePts?.[index] ?? 'n/a'
+        const elapsed = result.frameOffsetsMs?.[index] ?? 'n/a'
+        const hash = result.frameHashes?.[index] ?? 'n/a'
+        const type = result.frameTypes?.[index] ?? 'n/a'
+        post('log_info', {
+            data: `KI Burst ${data.burstId} frame ${index + 1} captured pts=${pts} elapsed=${elapsed}ms type=${type} hash=${hash}`
+        })
+    })
+
     post('burst_complete', {
         burstId: data.burstId,
         frames: result.frames,
         paths: result.paths,
         capturedAt: result.capturedAt,
         intervalMs: result.intervalMs,
-        frameOffsetsMs: result.frameOffsetsMs
+        frameOffsetsMs: result.frameOffsetsMs,
+        targetFrameOffsetsMs: result.targetFrameOffsetsMs,
+        framePts: result.framePts,
+        framePtsTime: result.framePtsTime,
+        frameTimestamps: result.frameTimestamps,
+        frameTypes: result.frameTypes,
+        frameRawChecksums: result.frameRawChecksums,
+        frameHashes: result.frameHashes,
+        rtpIntegrity: result.rtpIntegrity
     })
-    post('log_info', { data: `KI Burst ${data.burstId} complete: exactly 3 frames captured` })
+    post('log_info', { data: `KI Burst ${data.burstId} complete: exactly 3 clean decoded frames captured` })
 }
 
 async function handleCommand(data) {
@@ -140,7 +158,7 @@ async function handleCommand(data) {
             await startBurst(data)
             break
         default:
-            post('log_error', { data: `Unknown build-13 worker command: ${data.command}` })
+            post('log_error', { data: `Unknown build-14 worker command: ${data.command}` })
     }
 }
 
