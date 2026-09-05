@@ -6,6 +6,10 @@ import { spawn } from 'child_process'
 import { parseISO, addSeconds } from 'date-fns';
 import chalk from 'chalk'
 
+const snapshotRetryAttempts = 3
+const snapshotRetryDelaySeconds = 1
+const onDemandSnapshotMaxWaitMs = 3000
+
 export default class Camera extends RingPolledDevice {
     constructor(deviceInfo, events) {
         super(deviceInfo, 'camera')
@@ -62,6 +66,7 @@ export default class Camera extends RingPolledDevice {
                 cache: null,
                 cacheType: null,
                 timestamp: null,
+                sourceTimestamp: null,
                 onDemandTimestamp: 0
             },
             stream: {
@@ -309,6 +314,10 @@ export default class Camera extends RingPolledDevice {
         this.device.onNewNotification.subscribe(notification => {
             this.processNotification(notification)
         })
+
+        // Prevent an older asynchronous snapshot request from overwriting a
+        // newer motion/ding snapshot when Ring responds out of order.
+        this.snapshotRefreshGeneration = 0
 
         this.updateSnapshotMode()
         this.scheduleSnapshotRefresh()
@@ -832,20 +841,33 @@ publishEventSelectState(isPublish) {
 
     async refreshSnapshot(type, image_uuid) {
         let newSnapshot = false
-        let loop = 3
+        let attemptsRemaining = snapshotRetryAttempts
+        const previousSnapshot = this.data.snapshot.cache
+        const previousSourceTimestamp = this.data.snapshot.sourceTimestamp
+        const refreshGeneration = ++this.snapshotRefreshGeneration
 
         if (this.device.snapshotsAreBlocked) {
             this.debug('Snapshots are unavailable, check if motion capture is disabled manually or via modes settings')
-            return
+            return false
         }
 
-        while (!newSnapshot && loop > 0) {
+        while (!newSnapshot && attemptsRemaining > 0) {
+            const attempt = snapshotRetryAttempts - attemptsRemaining + 1
+            attemptsRemaining--
+
             try {
                 switch (type) {
                     case 'interval':
-                    case 'on-demand':
                         this.debug(`Requesting an updated ${type} snapshot`)
                         newSnapshot = await this.device.getNextSnapshot({ force: true })
+                        break;
+                    case 'on-demand':
+                        this.debug(`Requesting an updated ${type} snapshot after Ring timestamp ${previousSourceTimestamp || 'unknown'} (attempt ${attempt}/${snapshotRetryAttempts})`)
+                        newSnapshot = await this.device.getNextSnapshot({
+                            afterMs: previousSourceTimestamp || undefined,
+                            maxWaitMs: onDemandSnapshotMaxWaitMs,
+                            force: true
+                        })
                         break;
                     case 'motion':
                     case 'ding':
@@ -857,29 +879,57 @@ publishEventSelectState(isPublish) {
                             newSnapshot = await this.device.getNextSnapshot({ force: true })
                         } else {
                             this.debug(`The ${type} notification did not contain image UUID and battery cameras are unable to snapshot while recording`)
-                            loop = 0  // Don't retry in this case
+                            attemptsRemaining = 0  // Don't retry in this case
                         }
                         break;
                 }
+
+                if (newSnapshot && !Buffer.isBuffer(newSnapshot)) {
+                    this.debug(`Discarding invalid ${type} snapshot response (attempt ${attempt}/${snapshotRetryAttempts})`)
+                    newSnapshot = false
+                }
+
+                if (newSnapshot && type === 'on-demand' && Buffer.isBuffer(previousSnapshot) && newSnapshot.equals(previousSnapshot)) {
+                    this.debug(`Discarding duplicate on-demand snapshot returned by Ring (attempt ${attempt}/${snapshotRetryAttempts})`)
+                    newSnapshot = false
+                }
+
+                const newSourceTimestamp = Number(newSnapshot?.timeMillis)
+                if (newSnapshot && type === 'on-demand' && Number.isFinite(previousSourceTimestamp) &&
+                    Number.isFinite(newSourceTimestamp) && newSourceTimestamp <= previousSourceTimestamp) {
+                    this.debug(`Discarding stale on-demand snapshot timestamp ${newSourceTimestamp}; expected newer than ${previousSourceTimestamp} (attempt ${attempt}/${snapshotRetryAttempts})`)
+                    newSnapshot = false
+                }
             } catch (err) {
                 this.debug(err)
-                if (loop > 1) {
-                    this.debug(`Failed to retrieve updated ${type} snapshot, retrying in one second...`)
-                    await utils.sleep(1)
-                } else {
-                    this.debug(`Failed to retrieve updated ${type} snapshot after three attempts, aborting`)
-                }
             }
-            loop--
+
+            if (!newSnapshot && attemptsRemaining > 0) {
+                this.debug(`No usable updated ${type} snapshot yet, retrying in ${snapshotRetryDelaySeconds} second...`)
+                await utils.sleep(snapshotRetryDelaySeconds)
+            }
         }
 
         if (newSnapshot) {
+            if (refreshGeneration !== this.snapshotRefreshGeneration) {
+                this.debug(`Discarding superseded ${type} snapshot because a newer snapshot request started`)
+                return false
+            }
+
             this.debug(`Successfully retrieved updated ${type} snapshot`)
             this.data.snapshot.cache = newSnapshot
             this.data.snapshot.cacheType = type
             this.data.snapshot.timestamp = Math.round(Date.now()/1000)
+            const sourceTimestamp = Number(newSnapshot.timeMillis)
+            if (Number.isFinite(sourceTimestamp)) {
+                this.data.snapshot.sourceTimestamp = sourceTimestamp
+            }
             this.publishSnapshot()
+            return true
         }
+
+        this.debug(`Failed to retrieve a usable updated ${type} snapshot after ${snapshotRetryAttempts} attempts, aborting without publishing`)
+        return false
     }
 
     async startLiveStream(rtspPublishUrl) {

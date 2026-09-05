@@ -2,11 +2,30 @@ name: Build and Push ring-mqtt HA image
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "fix/distinct-snapshots" ]
   workflow_dispatch: {}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit and integration tests
+        run: npm test
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -15,6 +34,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: image
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "fix/distinct-snapshots" ]; then
+            echo "tag=ghcr.io/drongo76/ring-mqtt-custom:build-14" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=ghcr.io/drongo76/ring-mqtt-custom:build-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -32,8 +61,7 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64
-          tags: ghcr.io/drongo76/ring-mqtt-custom:build-${{ github.run_number }}
+          tags: ${{ steps.image.outputs.tag }}
 
       - name: Inspect image
-        run: |
-          docker buildx imagetools inspect ghcr.io/drongo76/ring-mqtt-custom:build-${{ github.run_number }}
+        run: docker buildx imagetools inspect "${{ steps.image.outputs.tag }}"

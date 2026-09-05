@@ -13,7 +13,7 @@ RUN S6_VERSION="v3.2.2.0" && \
     BASHIO_VERSION="v0.17.5" && \
     GO2RTC_VERSION="v1.9.14" && \
     APK_ARCH="$(apk --print-arch)" && \
-    apk add --no-cache tar xz git bash curl jq tzdata mosquitto-clients && \
+    apk add --no-cache tar xz bash curl jq tzdata mosquitto-clients && \
     curl -L -s "https://github.com/just-containers/s6-overlay/releases/download/${S6_VERSION}/s6-overlay-noarch.tar.xz" | tar -Jxpf - -C / && \
     case "${APK_ARCH}" in \
         aarch64|armhf|x86_64) \
@@ -31,15 +31,10 @@ RUN S6_VERSION="v3.2.2.0" && \
     chmod +x /etc/services.d/ring-mqtt/* && \
     rm -Rf /app/ring-mqtt/init && \
     case "${APK_ARCH}" in \
-        x86_64) \
-            GO2RTC_ARCH="amd64";; \
-        aarch64) \
-            GO2RTC_ARCH="arm64";; \
-        armv7|armhf) \
-            GO2RTC_ARCH="arm";; \
-        *) \
-            echo >&2 "ERROR: Unsupported architecture '$APK_ARCH'" \
-            exit 1;; \
+        x86_64) GO2RTC_ARCH="amd64";; \
+        aarch64) GO2RTC_ARCH="arm64";; \
+        armv7|armhf) GO2RTC_ARCH="arm";; \
+        *) echo >&2 "ERROR: Unsupported architecture '$APK_ARCH'"; exit 1;; \
     esac && \
     curl -L -s -o /usr/local/bin/go2rtc "https://github.com/AlexxIT/go2rtc/releases/download/${GO2RTC_VERSION}/go2rtc_linux_${GO2RTC_ARCH}" && \
     chmod +x /usr/local/bin/go2rtc && \
@@ -53,10 +48,9 @@ RUN S6_VERSION="v3.2.2.0" && \
     mkdir /data && \
     chmod 777 /data /app /run && \
     cd /app/ring-mqtt && \
-    chmod +x ring-mqtt.js && \
-    chmod +x init-ring-mqtt.js && \
-    npm install && \
-    rm -Rf /root/.npm && \
+    chmod +x ring-mqtt.js init-ring-mqtt.js && \
+    npm ci --omit=dev && \
+    npm cache clean --force && \
     rm -f -r /tmp/*
 ENTRYPOINT [ "/init" ]
 
