@@ -118,7 +118,11 @@ echo "-------------------------------------------------------"
 echo ring-mqtt.js version: $(cat package.json | grep version | cut -f4 -d'"')
 echo Node version $(node -v)
 echo NPM version $(npm -v)
-echo $(git --version)
+if command -v git >/dev/null 2>&1; then
+    echo $(git --version)
+else
+    echo "Git: not installed (production image)"
+fi
 echo "-------------------------------------------------------"
 
 echo "Running ring-mqtt..."

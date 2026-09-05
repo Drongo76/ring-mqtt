@@ -1,6 +1,7 @@
 import { parentPort, workerData } from 'worker_threads'
 import { WebrtcConnection } from '../lib/streaming/webrtc-connection.js'
 import { Build12StreamingSession } from '../lib/streaming/build12-streaming-session.js'
+import { captureBurstWithCleanup } from '../lib/ki-burst-worker-session.js'
 
 const cameraData = {
     name: workerData.deviceName,
@@ -43,13 +44,13 @@ async function startLive(data) {
     const session = new Build12StreamingSession(cameraData, connection)
     active = { id, kind: 'live', requestId: data.requestId, session }
 
-    post('log_info', { data: 'Build-12 live worker starting WebRTC session' })
+    post('log_info', { data: 'Build-13 live worker starting WebRTC session' })
 
     session.connection.pc.onConnectionState.subscribe(async state => {
         if (!isCurrent(id)) return
         if (state === 'connected') {
             post('state', { kind: 'live', data: 'active', requestId: data.requestId })
-            post('log_info', { data: 'Build-12 live WebRTC session connected' })
+            post('log_info', { data: 'Build-13 live WebRTC session connected' })
         } else if (state === 'failed') {
             post('state', { kind: 'live', data: 'failed', requestId: data.requestId })
             await stopActive('connection-failed')
@@ -60,7 +61,7 @@ async function startLive(data) {
         if (!isCurrent(id)) return
         active = null
         post('state', { kind: 'live', data: 'inactive', requestId: data.requestId })
-        post('log_info', { data: 'Build-12 live WebRTC session ended' })
+        post('log_info', { data: 'Build-13 live WebRTC session ended' })
     })
 
     try {
@@ -80,7 +81,7 @@ async function startLive(data) {
                 data.streamData.rtspPublishUrl
             ]
         })
-        if (isCurrent(id)) post('log_info', { data: 'Build-12 live ffmpeg process started' })
+        if (isCurrent(id)) post('log_info', { data: 'Build-13 live ffmpeg process started' })
     } catch (error) {
         if (!isCurrent(id)) return
         post('log_error', { data: error?.stack || error?.message || String(error) })
@@ -98,35 +99,36 @@ async function startBurst(data) {
 
     post('log_info', { data: `KI Burst ${data.burstId} starting dedicated WebRTC session` })
 
-    try {
-        const result = await session.captureJpegBurst({
-            burstId: data.burstId,
-            ...data.options
-        })
-        if (!isCurrent(id)) return
+    const { result, failure } = await captureBurstWithCleanup({
+        session,
+        burstId: data.burstId,
+        options: data.options,
+        onCleanup: () => post('log_info', { data: `KI Burst ${data.burstId} session stopped/cleanup complete` })
+    })
 
-        // Invalidate before stopping so onCallEnded cannot publish stale state.
-        active = null
-        session.stop()
-        post('burst_complete', {
-            burstId: data.burstId,
-            frames: result.frames,
-            paths: result.paths,
-            capturedAt: result.capturedAt,
-            intervalMs: result.intervalMs,
-            frameOffsetsMs: result.frameOffsetsMs
-        })
-        post('log_info', { data: `KI Burst ${data.burstId} complete: exactly 3 frames captured` })
-    } catch (error) {
-        if (!isCurrent(id)) return
-        active = null
-        try { session.stop() } catch {}
+    // A stop/cancel can run immediately while capture is in progress. If this
+    // session was invalidated, do not publish a late success/failure result.
+    if (!isCurrent(id)) return
+    active = null
+
+    if (failure) {
         post('burst_failed', {
             burstId: data.burstId,
-            error: error?.message || String(error)
+            error: failure?.message || String(failure)
         })
-        post('log_error', { data: `KI Burst ${data.burstId} failed: ${error?.stack || error?.message || error}` })
+        post('log_error', { data: `KI Burst ${data.burstId} failed: ${failure?.stack || failure?.message || failure}` })
+        return
     }
+
+    post('burst_complete', {
+        burstId: data.burstId,
+        frames: result.frames,
+        paths: result.paths,
+        capturedAt: result.capturedAt,
+        intervalMs: result.intervalMs,
+        frameOffsetsMs: result.frameOffsetsMs
+    })
+    post('log_info', { data: `KI Burst ${data.burstId} complete: exactly 3 frames captured` })
 }
 
 async function handleCommand(data) {
@@ -137,15 +139,20 @@ async function handleCommand(data) {
         case 'burst':
             await startBurst(data)
             break
-        case 'stop':
-            await stopActive(data.reason || 'stop')
-            break
         default:
-            post('log_error', { data: `Unknown build-12 worker command: ${data.command}` })
+            post('log_error', { data: `Unknown build-13 worker command: ${data.command}` })
     }
 }
 
 parentPort.on('message', data => {
+    if (data.command === 'stop') {
+        // Stop must be able to interrupt an in-flight burst immediately; do not
+        // serialize it behind the long-running burst promise.
+        stopActive(data.reason || 'stop')
+            .catch(error => post('log_error', { data: error?.stack || error?.message || String(error) }))
+        return
+    }
+
     commandQueue = commandQueue
         .then(() => handleCommand(data))
         .catch(error => post('log_error', { data: error?.stack || error?.message || String(error) }))
