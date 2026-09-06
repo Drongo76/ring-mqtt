@@ -25,6 +25,7 @@ jobs:
         run: npm test
 
   build:
+    if: github.ref_name != 'feature/adaptive-ki-burst'
     needs: test
     runs-on: ubuntu-latest
     permissions:
