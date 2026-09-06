@@ -61,9 +61,15 @@ async function collectRealH264Rtp(tempDir) {
 
     assert.equal(code, 0, `RTP fixture ffmpeg failed: ${stderr}`)
     assert.ok(packets.length > 10, `expected real H264 RTP fixture packets, got ${packets.length}`)
-    const sdp = await readFile(sdpPath, 'utf8')
-    assert.match(sdp, /m=video\s+\d+\s+RTP\/AVP\s+96/)
-    assert.match(sdp, /a=rtpmap:96 H264\/90000/i)
+    const rawSdp = await readFile(sdpPath, 'utf8')
+    assert.match(rawSdp, /m=video\s+\d+\s+RTP\/AVP\s+96/)
+    assert.match(rawSdp, /a=rtpmap:96 H264\/90000/i)
+
+    // Ring answers include a usable connection address in the media section that
+    // getVideoOnlySdp preserves. ffmpeg's generated fixture SDP usually puts c=
+    // only at session scope, which getVideoOnlySdp deliberately strips. Add the
+    // equivalent media-local IPv4 c= line so this fixture exercises the Ring path.
+    const sdp = rawSdp.replace(/(m=video[^\n]*\n)/, '$1c=IN IP4 127.0.0.1\n')
     return { packets, sdp }
 }
 
