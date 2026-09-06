@@ -216,9 +216,17 @@ test('RTP parser and H264 IDR detection use real RTP sequence/timestamp data', (
     assert.equal(payloadStartsH264Idr(parsed.payload), true)
 })
 
-test('RTP integrity gate starts on a complete IDR, rejects a broken access unit, and resyncs on a fresh IDR', () => {
+test('RTP integrity gate starts on a complete IDR, bounds a broken access unit, and resyncs on a fresh IDR', () => {
     let keyframeRequests = 0
-    const gate = new H264RtpFrameGate({ requestKeyFrame: () => { keyframeRequests++ } })
+    let reorderTimeoutCallback = null
+    const gate = new H264RtpFrameGate({
+        requestKeyFrame: () => { keyframeRequests++ },
+        setTimer: callback => {
+            reorderTimeoutCallback = callback
+            return { id: 1 }
+        },
+        clearTimer: () => { reorderTimeoutCallback = null }
+    })
     const idrStart = Buffer.from([0x7c, 0x85, 0x01])
     const idrEnd = Buffer.from([0x7c, 0x45, 0x02])
     const pSlice = Buffer.from([0x61, 0x01])
@@ -235,13 +243,16 @@ test('RTP integrity gate starts on a complete IDR, rejects a broken access unit,
 
     assert.equal(gate.push(makeRtp({ sequenceNumber: 103, timestamp: 96000, payload: pSlice })), null)
     const broken = gate.push(makeRtp({ sequenceNumber: 105, timestamp: 96000, marker: true, payload: pSlice }))
-    assert.equal(broken.accepted, false)
-    assert.equal(broken.reason, 'incomplete-access-unit')
+    assert.equal(broken, null)
+    assert.equal(keyframeRequests, 0)
+    assert.equal(typeof reorderTimeoutCallback, 'function')
+
+    reorderTimeoutCallback()
     assert.equal(keyframeRequests, 1)
+    assert.equal(gate.snapshotStats().auDiagnostics.at(-1).rejectReason, 'reorder-timeout-missing-packets')
 
     const waiting = gate.push(makeRtp({ sequenceNumber: 106, timestamp: 99000, marker: true, payload: pSlice }))
-    assert.equal(waiting.accepted, false)
-    assert.equal(waiting.reason, 'waiting-keyframe')
+    assert.equal(waiting, null)
 
     assert.equal(gate.push(makeRtp({ sequenceNumber: 107, timestamp: 102000, payload: idrStart })), null)
     const resynced = gate.push(makeRtp({ sequenceNumber: 108, timestamp: 102000, marker: true, payload: idrEnd }))
@@ -251,7 +262,7 @@ test('RTP integrity gate starts on a complete IDR, rejects a broken access unit,
     const stats = gate.snapshotStats()
     assert.equal(stats.droppedAccessUnits, 1)
     assert.equal(stats.resyncs, 1)
-    assert.equal(stats.waitingForKeyframe, 1)
+    assert.equal(stats.waitingForKeyframe, 0)
 })
 
 test('worker burst cleanup stops the session after successful capture before returning result', async () => {
