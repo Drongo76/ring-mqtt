@@ -2,7 +2,7 @@ name: Build and Push ring-mqtt HA image
 
 on:
   push:
-    branches: [ "main", "fix/distinct-snapshots" ]
+    branches: [ "main", "fix/distinct-snapshots", "feature/adaptive-ki-burst" ]
   workflow_dispatch: {}
 
 jobs:
@@ -25,6 +25,7 @@ jobs:
         run: npm test
 
   build:
+    if: github.ref_name != 'feature/adaptive-ki-burst'
     needs: test
     runs-on: ubuntu-latest
     permissions:
