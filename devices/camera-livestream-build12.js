@@ -131,7 +131,7 @@ async function startBurst(data) {
     })
 
     post('log_info', {
-        data: `KI Burst ${data.burstId} adaptive selection candidates=${result.candidateFramesEvaluated} threshold=${result.selectionThreshold} reasons=${result.selectionReasons?.join('/')}`
+        data: `KI Burst ${data.burstId} buffered selection candidates=${result.candidateFramesEvaluated} observation=${result.observationWindowMs}ms pairwise=${JSON.stringify(result.pairwiseDifferenceScores)} firstClean=${result.firstCleanFrameAt} total=${result.totalBurstDurationMs}ms`
     })
 
     post('burst_complete', {
@@ -140,14 +140,20 @@ async function startBurst(data) {
         paths: result.paths,
         capturedAt: result.capturedAt,
         selectionMode: result.selectionMode,
+        observationWindowMs: result.observationWindowMs,
         candidateFramesEvaluated: result.candidateFramesEvaluated,
         frameOffsetsMs: result.frameOffsetsMs,
         actualFrameOffsetsMs: result.actualFrameOffsetsMs,
         differenceScores: result.differenceScores,
         changedBlockRatios: result.changedBlockRatios,
+        pairwiseDifferenceScores: result.pairwiseDifferenceScores,
+        totalDiversityScore: result.totalDiversityScore,
         selectionReasons: result.selectionReasons,
         selectionThreshold: result.selectionThreshold,
         minimumSelectionSeparationMs: result.minimumSelectionSeparationMs,
+        firstCleanFrameAt: result.firstCleanFrameAt,
+        totalBurstDurationMs: result.totalBurstDurationMs,
+        frameSourceIndices: result.frameSourceIndices,
         framePts: result.framePts,
         framePtsTime: result.framePtsTime,
         frameTimestamps: result.frameTimestamps,
@@ -156,7 +162,7 @@ async function startBurst(data) {
         frameHashes: result.frameHashes,
         rtpIntegrity: result.rtpIntegrity
     })
-    post('log_info', { data: `KI Burst ${data.burstId} complete: exactly 3 clean decoded frames captured with adaptive selection` })
+    post('log_info', { data: `KI Burst ${data.burstId} complete: exactly 3 clean decoded frames selected after buffered observation` })
 }
 
 async function handleCommand(data) {
