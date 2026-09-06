@@ -172,3 +172,51 @@ test('interleaved RTP timestamps remain buffered independently and drain in sequ
     assert.deepEqual(result.accessUnits.map(unit => unit.timestamp), [93000, 96000])
     assert.deepEqual(result.packets.map(packet => packet.readUInt16BE(2)), [2, 3, 4, 5])
 })
+
+test('marker-less current AU expires, resyncs, and cannot pin expectedSequence forever', () => {
+    const timers = makeFakeTimers()
+    let keyframeRequests = 0
+    const gate = new H264RtpFrameGate({
+        requestKeyFrame: () => { keyframeRequests++ },
+        setTimer: callback => timers.setTimer(callback),
+        clearTimer: id => timers.clearTimer(id)
+    })
+
+    gate.push(makeRtp({ sequenceNumber: 1998, timestamp: 90000, payload: idrStart }))
+    const first = gate.push(makeRtp({ sequenceNumber: 1999, timestamp: 90000, marker: true, payload: idrEnd }))
+    assert.equal(first.accepted, true)
+    assert.equal(gate.expectedSequence, 2000)
+
+    gate.push(makeRtp({ sequenceNumber: 2000, timestamp: 93000, payload: pStart }))
+    gate.push(makeRtp({ sequenceNumber: 2001, timestamp: 93000, payload: pEnd }))
+
+    const pendingBeforeExpiry = gate.snapshotStats().pendingAccessUnits
+    assert.equal(pendingBeforeExpiry.length, 1)
+    assert.equal(pendingBeforeExpiry[0].startSequence, 2000)
+    assert.equal(pendingBeforeExpiry[0].markerSeen, false)
+    assert.equal(timers.size, 1, 'marker-less current AU must receive a bounded expiry timer')
+
+    timers.fireAll()
+
+    const afterExpiry = gate.snapshotStats()
+    assert.equal(afterExpiry.pendingAccessUnits.length, 0, 'marker-less AU must not survive reorderWaitMs')
+    assert.equal(afterExpiry.droppedAccessUnits, 1)
+    assert.equal(afterExpiry.resyncs, 1)
+    assert.equal(afterExpiry.auDiagnostics.at(-1).rejectReason, 'reorder-timeout-missing-marker')
+    assert.equal(afterExpiry.auDiagnostics.at(-1).boundedReorderExpiry, true)
+    assert.equal(gate.expectedSequence, null)
+    assert.equal(keyframeRequests, 1)
+
+    gate.push(makeRtp({ sequenceNumber: 2100, timestamp: 96000, payload: pStart }))
+    assert.equal(gate.push(makeRtp({ sequenceNumber: 2101, timestamp: 96000, marker: true, payload: pEnd })), null)
+
+    gate.push(makeRtp({ sequenceNumber: 2200, timestamp: 99000, payload: idrStart }))
+    const recovered = gate.push(makeRtp({ sequenceNumber: 2201, timestamp: 99000, marker: true, payload: idrEnd }))
+    assert.equal(recovered.accepted, true)
+    assert.equal(recovered.keyframe, true)
+
+    const finalStats = gate.snapshotStats()
+    assert.equal(finalStats.auDiagnostics.at(-1).startSequence, 2200)
+    assert.equal(gate.expectedSequence, 2202)
+    assert.equal(finalStats.pendingAccessUnits.length, 0)
+})
