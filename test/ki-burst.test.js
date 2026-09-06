@@ -1,18 +1,31 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { KiBurstController, normalizeBurstFrames } from '../lib/ki-burst-controller.js'
+import {
+    KiBurstController,
+    normalizeBurstFrames,
+    KI_BURST_CONTROLLER_TIMEOUT_MS,
+    KI_BURST_INTERVAL_MS,
+    KI_BURST_OBSERVATION_WINDOW_MS,
+    KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS
+} from '../lib/ki-burst-controller.js'
 import { captureBurstWithCleanup } from '../lib/ki-burst-worker-session.js'
-import { buildBurstFfmpegArgs, parseShowinfoFrameLine } from '../lib/streaming/build12-streaming-session.js'
+import {
+    buildBurstFfmpegArgs,
+    candidateFilenameForPts,
+    DEFAULT_KI_BURST_HARD_SAFETY_TIMEOUT_MS,
+    parseShowinfoFrameLine
+} from '../lib/streaming/build12-streaming-session.js'
 import { H264RtpFrameGate, parseRtpPacket, payloadStartsH264Idr } from '../lib/streaming/h264-rtp-frame-gate.js'
 import { homeAssistantSlug } from '../lib/build12-patch.js'
 import { removeBrokenStillImageUrl } from '../lib/build14-patch.js'
 import Camera from '../devices/camera.js'
 
-function makeController({ timeoutMs = 12000 } = {}) {
+function makeController({ timeoutMs = KI_BURST_CONTROLLER_TIMEOUT_MS } = {}) {
     const sent = []
     const states = []
     let ticketRequests = 0
     let timeoutCallback = null
+    let timerDelayMs = null
     const controller = new KiBurstController({
         requestTicket: async () => {
             ticketRequests++
@@ -21,8 +34,9 @@ function makeController({ timeoutMs = 12000 } = {}) {
         sendWorker: message => sent.push(message),
         onState: (state, details) => states.push({ state, details }),
         timeoutMs,
-        setTimer: callback => {
+        setTimer: (callback, delayMs) => {
             timeoutCallback = callback
+            timerDelayMs = delayMs
             return { id: 1 }
         },
         clearTimer: () => { timeoutCallback = null }
@@ -32,6 +46,7 @@ function makeController({ timeoutMs = 12000 } = {}) {
         sent,
         states,
         get ticketRequests() { return ticketRequests },
+        get timerDelayMs() { return timerDelayMs },
         fireTimeout: () => timeoutCallback?.()
     }
 }
@@ -47,50 +62,77 @@ function makeRtp({ sequenceNumber, timestamp, marker = false, ssrc = 42, payload
     return packet
 }
 
-test('KI Burst opens exactly one dedicated burst session and completes with exactly three adaptive frames', async () => {
+test('KI Burst opens one dedicated session with buffered observation and completes with exactly three frames', async () => {
     const fixture = makeController()
     const burstId = await fixture.controller.start()
     assert.equal(fixture.ticketRequests, 1)
     assert.equal(fixture.sent.filter(message => message.command === 'burst').length, 1)
     assert.deepEqual(fixture.sent.map(message => message.command), ['stop', 'burst'])
-    assert.equal(fixture.sent[1].options.minSeparationMs, 450)
-    assert.equal(fixture.sent[1].options.timeoutMs, 8000)
+    assert.equal(fixture.sent[1].options.minSeparationMs, KI_BURST_INTERVAL_MS)
+    assert.equal(fixture.sent[1].options.observationWindowMs, KI_BURST_OBSERVATION_WINDOW_MS)
+    assert.equal(fixture.sent[1].options.hardSafetyTimeoutMs, KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS)
+    assert.equal(fixture.timerDelayMs, KI_BURST_CONTROLLER_TIMEOUT_MS)
 
     const frames = [Buffer.from('frame-1'), Buffer.from('frame-2'), Buffer.from('frame-3')]
+    const pairwiseDifferenceScores = [
+        { pair: 'F1-F2', score: 0.31 },
+        { pair: 'F2-F3', score: 0.42 },
+        { pair: 'F1-F3', score: 0.51 }
+    ]
     const handled = fixture.controller.handleWorkerMessage({
         type: 'burst_complete',
         burstId,
         frames,
         paths: ['/data/1.jpg', '/data/2.jpg', '/data/3.jpg'],
-        selectionMode: 'adaptive',
-        candidateFramesEvaluated: 11,
-        actualFrameOffsetsMs: [0, 1333, 2867],
+        selectionMode: 'adaptive_buffered',
+        observationWindowMs: 6000,
+        candidateFramesEvaluated: 62,
+        actualFrameOffsetsMs: [0, 3200, 6050],
         differenceScores: [0, 0.061, 0.084],
         changedBlockRatios: [0, 0.1125, 0.1542],
-        selectionReasons: ['first_clean_frame', 'motion_displacement', 'motion_displacement'],
+        pairwiseDifferenceScores,
+        totalDiversityScore: 1.24,
+        selectionReasons: ['first_clean_frame', 'global_diversity', 'global_diversity'],
         selectionThreshold: 0.08,
-        minimumSelectionSeparationMs: 450,
-        framePts: [0, 120000, 258000],
-        framePtsTime: [0, 1.333, 2.867],
-        frameTimestamps: ['2026-09-05T17:00:00.000Z', '2026-09-05T17:00:01.333Z', '2026-09-05T17:00:02.867Z'],
+        minimumSelectionSeparationMs: 1000,
+        firstCleanFrameAt: '2026-09-06T08:00:00.000Z',
+        totalBurstDurationMs: 7350,
+        frameSourceIndices: [0, 31, 61],
+        framePts: [0, 288000, 544500],
+        framePtsTime: [0, 3.2, 6.05],
+        frameTimestamps: ['2026-09-06T08:00:00.000Z', '2026-09-06T08:00:03.200Z', '2026-09-06T08:00:06.050Z'],
         frameTypes: ['I', 'P', 'P'],
         frameRawChecksums: ['A', 'B', 'C'],
         frameHashes: ['a', 'b', 'c'],
-        rtpIntegrity: { acceptedAccessUnits: 20 },
-        capturedAt: '2026-09-05T17:00:02.900Z'
+        rtpIntegrity: { acceptedAccessUnits: 80 },
+        capturedAt: '2026-09-06T08:00:07.350Z'
     })
 
     assert.equal(handled, true)
     assert.equal(fixture.controller.running, false)
     assert.deepEqual(fixture.states.map(entry => entry.state), ['capturing', 'complete'])
-    assert.equal(fixture.states.at(-1).details.frames.length, 3)
-    assert.equal(fixture.states.at(-1).details.selectionMode, 'adaptive')
-    assert.equal(fixture.states.at(-1).details.candidateFramesEvaluated, 11)
-    assert.deepEqual(fixture.states.at(-1).details.actualFrameOffsetsMs, [0, 1333, 2867])
-    assert.deepEqual(fixture.states.at(-1).details.selectionReasons, ['first_clean_frame', 'motion_displacement', 'motion_displacement'])
-    assert.deepEqual(fixture.states.at(-1).details.framePts, [0, 120000, 258000])
-    assert.deepEqual(fixture.states.at(-1).details.frameHashes, ['a', 'b', 'c'])
+    const details = fixture.states.at(-1).details
+    assert.equal(details.frames.length, 3)
+    assert.equal(details.selectionMode, 'adaptive_buffered')
+    assert.equal(details.observationWindowMs, 6000)
+    assert.equal(details.candidateFramesEvaluated, 62)
+    assert.deepEqual(details.actualFrameOffsetsMs, [0, 3200, 6050])
+    assert.deepEqual(details.pairwiseDifferenceScores, pairwiseDifferenceScores)
+    assert.deepEqual(details.selectionReasons, ['first_clean_frame', 'global_diversity', 'global_diversity'])
+    assert.equal(details.firstCleanFrameAt, '2026-09-06T08:00:00.000Z')
+    assert.equal(details.totalBurstDurationMs, 7350)
+    assert.deepEqual(details.framePts, [0, 288000, 544500])
+    assert.deepEqual(details.frameHashes, ['a', 'b', 'c'])
     assert.equal(fixture.sent.some(message => message.command === 'start'), false)
+})
+
+test('controller and worker hard deadlines remain below the existing 15 second HA wait', () => {
+    assert.equal(KI_BURST_OBSERVATION_WINDOW_MS, 6000)
+    assert.equal(KI_BURST_INTERVAL_MS, 1000)
+    assert.equal(KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS, 12500)
+    assert.equal(DEFAULT_KI_BURST_HARD_SAFETY_TIMEOUT_MS, 12500)
+    assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, 13000)
+    assert.ok(KI_BURST_CONTROLLER_TIMEOUT_MS < 15000)
 })
 
 test('KI Burst timeout stops the worker and cannot be resurrected by a late completion callback', async () => {
@@ -118,12 +160,10 @@ test('burst frame normalization accepts worker Uint8Array payloads and preserves
     assert.equal(frames.length, 3)
 })
 
-test('burst ffmpeg emits every clean decoded candidate for adaptive analysis without fixed time selection', () => {
-    const args = buildBurstFfmpegArgs({ candidatePattern: '/tmp/candidate-%06d.jpg' })
+test('ffmpeg emits every decoded frame to paired full-JPEG and luma branches without fixed selection offsets', () => {
+    const args = buildBurstFfmpegArgs({ candidatePattern: '/tmp/candidate-%d.jpg' })
     const filter = args[args.indexOf('-filter_complex') + 1]
-    assert.match(filter, /setpts=PTS-STARTPTS/)
-    assert.match(filter, /showinfo/)
-    assert.match(filter, /split=2/)
+    assert.match(filter, /setpts=PTS-STARTPTS,showinfo,split=2/)
     assert.match(filter, /scale=160:90/)
     assert.equal(filter.includes('select='), false)
     assert.equal(filter.includes('fps='), false)
@@ -131,7 +171,16 @@ test('burst ffmpeg emits every clean decoded candidate for adaptive analysis wit
     assert.equal(args.includes('+discardcorrupt'), true)
     assert.equal(args.includes('rawvideo'), true)
     assert.equal(args.includes('image2'), true)
-    assert.equal(args.at(-1), '/tmp/candidate-%06d.jpg')
+    assert.equal(args[args.indexOf('-frame_pts') + 1], '1')
+    assert.equal(args.at(-1), '/tmp/candidate-%d.jpg')
+})
+
+test('full-resolution JPEG filename is keyed by the exact analyzed decoder PTS', () => {
+    const line = '[Parsed_showinfo_1 @ 0x123] n:  17 pts:  288000 pts_time:3.2 duration:3000 fmt:yuv420p iskey:0 type:P checksum:ABCDEF12'
+    const diagnostic = parseShowinfoFrameLine(line, '2026-09-06T08:00:03.200Z')
+    assert.equal(diagnostic.index, 17)
+    assert.equal(diagnostic.pts, 288000)
+    assert.equal(candidateFilenameForPts(diagnostic.pts), 'candidate-288000.jpg')
 })
 
 test('showinfo parser exposes decoder PTS and timestamp diagnostics', () => {
