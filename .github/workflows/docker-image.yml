@@ -2,7 +2,7 @@ name: Build and Push ring-mqtt HA image
 
 on:
   push:
-    branches: [ "main", "fix/distinct-snapshots" ]
+    branches: [ "main", "fix/distinct-snapshots", "feature/adaptive-ki-burst" ]
   workflow_dispatch: {}
 
 jobs:
@@ -39,7 +39,9 @@ jobs:
         id: image
         shell: bash
         run: |
-          if [ "${GITHUB_REF_NAME}" = "fix/distinct-snapshots" ]; then
+          if [ "${GITHUB_REF_NAME}" = "feature/adaptive-ki-burst" ]; then
+            echo "tag=ghcr.io/drongo76/ring-mqtt-custom:build-15" >> "$GITHUB_OUTPUT"
+          elif [ "${GITHUB_REF_NAME}" = "fix/distinct-snapshots" ]; then
             echo "tag=ghcr.io/drongo76/ring-mqtt-custom:build-14" >> "$GITHUB_OUTPUT"
           else
             echo "tag=ghcr.io/drongo76/ring-mqtt-custom:build-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
