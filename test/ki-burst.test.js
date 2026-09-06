@@ -47,33 +47,48 @@ function makeRtp({ sequenceNumber, timestamp, marker = false, ssrc = 42, payload
     return packet
 }
 
-test('KI Burst opens exactly one dedicated burst session and completes with exactly three sequential frames', async () => {
+test('KI Burst opens exactly one dedicated burst session and completes with exactly three adaptive frames', async () => {
     const fixture = makeController()
     const burstId = await fixture.controller.start()
     assert.equal(fixture.ticketRequests, 1)
     assert.equal(fixture.sent.filter(message => message.command === 'burst').length, 1)
     assert.deepEqual(fixture.sent.map(message => message.command), ['stop', 'burst'])
+    assert.equal(fixture.sent[1].options.minSeparationMs, 450)
+    assert.equal(fixture.sent[1].options.timeoutMs, 8000)
+
     const frames = [Buffer.from('frame-1'), Buffer.from('frame-2'), Buffer.from('frame-3')]
     const handled = fixture.controller.handleWorkerMessage({
         type: 'burst_complete',
         burstId,
         frames,
         paths: ['/data/1.jpg', '/data/2.jpg', '/data/3.jpg'],
-        intervalMs: 800,
-        frameOffsetsMs: [0, 867, 1700],
-        targetFrameOffsetsMs: [0, 800, 1600],
-        framePts: [0, 78000, 153000],
-        framePtsTime: [0, 0.867, 1.7],
-        frameTimestamps: ['2026-09-05T17:00:00.000Z', '2026-09-05T17:00:00.867Z', '2026-09-05T17:00:01.700Z'],
+        selectionMode: 'adaptive',
+        candidateFramesEvaluated: 11,
+        actualFrameOffsetsMs: [0, 1333, 2867],
+        differenceScores: [0, 0.061, 0.084],
+        changedBlockRatios: [0, 0.1125, 0.1542],
+        selectionReasons: ['first_clean_frame', 'motion_displacement', 'motion_displacement'],
+        selectionThreshold: 0.08,
+        minimumSelectionSeparationMs: 450,
+        framePts: [0, 120000, 258000],
+        framePtsTime: [0, 1.333, 2.867],
+        frameTimestamps: ['2026-09-05T17:00:00.000Z', '2026-09-05T17:00:01.333Z', '2026-09-05T17:00:02.867Z'],
+        frameTypes: ['I', 'P', 'P'],
+        frameRawChecksums: ['A', 'B', 'C'],
         frameHashes: ['a', 'b', 'c'],
-        capturedAt: '2026-09-05T17:00:01.800Z'
+        rtpIntegrity: { acceptedAccessUnits: 20 },
+        capturedAt: '2026-09-05T17:00:02.900Z'
     })
+
     assert.equal(handled, true)
     assert.equal(fixture.controller.running, false)
     assert.deepEqual(fixture.states.map(entry => entry.state), ['capturing', 'complete'])
     assert.equal(fixture.states.at(-1).details.frames.length, 3)
-    assert.deepEqual(fixture.states.at(-1).details.frameOffsetsMs, [0, 867, 1700])
-    assert.deepEqual(fixture.states.at(-1).details.framePts, [0, 78000, 153000])
+    assert.equal(fixture.states.at(-1).details.selectionMode, 'adaptive')
+    assert.equal(fixture.states.at(-1).details.candidateFramesEvaluated, 11)
+    assert.deepEqual(fixture.states.at(-1).details.actualFrameOffsetsMs, [0, 1333, 2867])
+    assert.deepEqual(fixture.states.at(-1).details.selectionReasons, ['first_clean_frame', 'motion_displacement', 'motion_displacement'])
+    assert.deepEqual(fixture.states.at(-1).details.framePts, [0, 120000, 258000])
     assert.deepEqual(fixture.states.at(-1).details.frameHashes, ['a', 'b', 'c'])
     assert.equal(fixture.sent.some(message => message.command === 'start'), false)
 })
@@ -103,16 +118,20 @@ test('burst frame normalization accepts worker Uint8Array payloads and preserves
     assert.equal(frames.length, 3)
 })
 
-test('burst ffmpeg samples actual decoded frames by PTS instead of forcing synthetic fps frames', () => {
-    const args = buildBurstFfmpegArgs({ intervalMs: 800, frameCount: 3, outputPattern: '/tmp/frame-%d.jpg' })
-    const filter = args[args.indexOf('-vf') + 1]
+test('burst ffmpeg emits every clean decoded candidate for adaptive analysis without fixed time selection', () => {
+    const args = buildBurstFfmpegArgs({ candidatePattern: '/tmp/candidate-%06d.jpg' })
+    const filter = args[args.indexOf('-filter_complex') + 1]
     assert.match(filter, /setpts=PTS-STARTPTS/)
-    assert.match(filter, /select=.*0\.8/)
     assert.match(filter, /showinfo/)
+    assert.match(filter, /split=2/)
+    assert.match(filter, /scale=160:90/)
+    assert.equal(filter.includes('select='), false)
     assert.equal(filter.includes('fps='), false)
+    assert.equal(args.includes('-frames:v'), false)
     assert.equal(args.includes('+discardcorrupt'), true)
-    assert.equal(args[args.indexOf('-frames:v') + 1], '3')
-    assert.equal(args[args.indexOf('-fps_mode') + 1], 'vfr')
+    assert.equal(args.includes('rawvideo'), true)
+    assert.equal(args.includes('image2'), true)
+    assert.equal(args.at(-1), '/tmp/candidate-%06d.jpg')
 })
 
 test('showinfo parser exposes decoder PTS and timestamp diagnostics', () => {
