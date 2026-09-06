@@ -216,7 +216,9 @@ test('marker-less current AU expires, resyncs, and cannot pin expectedSequence f
     assert.equal(recovered.keyframe, true)
 
     const finalStats = gate.snapshotStats()
-    assert.equal(finalStats.auDiagnostics.at(-1).startSequence, 2200)
+    const recoveredDiagnostic = finalStats.auDiagnostics.find(entry =>
+        entry.timestamp === 99000 && entry.finalizeReason !== null)
+    assert.equal(recoveredDiagnostic?.startSequence, 2200)
     assert.equal(gate.expectedSequence, 2202)
     assert.equal(finalStats.pendingAccessUnits.length, 0)
 })
