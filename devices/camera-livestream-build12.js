@@ -20,6 +20,14 @@ function isCurrent(id) {
     return Boolean(active && active.id === id)
 }
 
+function logRejectedPtsCandidates(burstId, rejected = []) {
+    for (const item of rejected) {
+        post('log_info', {
+            data: `KI Burst ${burstId} rejected PTS candidate sourceIndex=${item.sourceIndex} previousPts=${item.previousPts} currentPts=${item.currentPts} decodedPts=${item.decodedPts} fullPts=${item.fullPts} lumaPts=${item.lumaPts} reason=${item.rejectionReason}`
+        })
+    }
+}
+
 async function stopActive(reason = 'stop') {
     const current = active
     if (!current) return
@@ -109,13 +117,18 @@ async function startBurst(data) {
     active = null
 
     if (failure) {
+        const diagnostics = failure?.kiBurstDiagnostics && typeof failure.kiBurstDiagnostics === 'object' ? failure.kiBurstDiagnostics : {}
+        logRejectedPtsCandidates(data.burstId, diagnostics.rejectedPtsCandidates)
         post('burst_failed', {
             burstId: data.burstId,
-            error: failure?.message || String(failure)
+            error: failure?.message || String(failure),
+            diagnostics
         })
         post('log_error', { data: `KI Burst ${data.burstId} failed: ${failure?.stack || failure?.message || failure}` })
         return
     }
+
+    logRejectedPtsCandidates(data.burstId, result.rejectedPtsCandidates)
 
     result.frames.forEach((_, index) => {
         const pts = result.framePts?.[index] ?? 'n/a'
@@ -160,7 +173,8 @@ async function startBurst(data) {
         frameTypes: result.frameTypes,
         frameRawChecksums: result.frameRawChecksums,
         frameHashes: result.frameHashes,
-        rtpIntegrity: result.rtpIntegrity
+        rtpIntegrity: result.rtpIntegrity,
+        rejectedPtsCandidates: result.rejectedPtsCandidates
     })
     post('log_info', { data: `KI Burst ${data.burstId} complete: exactly 3 clean decoded frames selected after buffered observation` })
 }
