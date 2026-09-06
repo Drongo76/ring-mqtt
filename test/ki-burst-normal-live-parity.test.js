@@ -60,6 +60,18 @@ async function assertSourcePathsStillDifferOnlyAtRtpForwarding() {
     const normalSource = await readFile(new URL('../lib/streaming/streaming-session.js', import.meta.url), 'utf8')
     const burstSource = await readFile(new URL('../lib/streaming/build12-streaming-session.js', import.meta.url), 'utf8')
 
+    const normalVideoPortIndex = normalSource.indexOf('const videoPort = await this.reservePort(1)')
+    const normalAnswerIndex = normalSource.indexOf('firstValueFrom(this.connection.onCallAnswered)')
+    const burstVideoPortIndex = burstSource.indexOf('const videoPort = await this.reservePort(1)')
+    const burstAnswerIndex = burstSource.indexOf('firstValueFrom(this.connection.onCallAnswered)')
+
+    assert.ok(normalVideoPortIndex >= 0, 'normal live video-port reservation is present')
+    assert.ok(normalAnswerIndex >= 0, 'normal live SDP-answer wait is present')
+    assert.ok(burstVideoPortIndex >= 0, 'dedicated KI Burst video-port reservation is present')
+    assert.ok(burstAnswerIndex >= 0, 'dedicated KI Burst SDP-answer wait is present')
+    assert.ok(normalVideoPortIndex < normalAnswerIndex, 'normal live reserves its video port before waiting for the SDP answer')
+    assert.ok(burstVideoPortIndex < burstAnswerIndex, 'dedicated KI Burst must reserve its video port before waiting for the SDP answer')
+
     assert.match(normalSource, /this\.onVideoRtp\.pipe\(concatMap\(\(rtp\) => \{\s*return this\.videoSplitter\.send\(rtp\.serialize\(\), \{ port: videoPort \}\)/s)
     assert.match(burstSource, /this\.onVideoRtp\.subscribe\(rtp => \{\s*const result = gate\.push\(rtp\.serialize\(\)\)\s*if \(!result\?\.accepted\) return/s)
 }
