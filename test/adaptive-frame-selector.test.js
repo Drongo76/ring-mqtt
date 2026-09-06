@@ -208,3 +208,30 @@ test('block luma difference still suppresses tiny codec noise', () => {
     const difference = calculateBlockLumaDifference(base, codecNoise(base))
     assert.ok(difference.changedBlockRatio < DEFAULT_CHANGED_BLOCK_THRESHOLD)
 })
+
+test('88-candidate finalization must not recompute the same expensive luma pairs thousands of times', () => {
+    const selector = new AdaptiveFrameSelector({ minSeparationMs: 1000 })
+    const base = baseFrame(70)
+    let expensiveComparisons = 0
+    const originalCompare = selector.compare.bind(selector)
+    selector.compare = (reference, current) => {
+        expensiveComparisons++
+        return originalCompare(reference, current)
+    }
+
+    for (let i = 0; i < 88; i++) {
+        const elapsedMs = Math.round((i * 6000) / 87)
+        const x = (i * 7) % 125
+        const frame = patch(base, x, 18, 35, 45, 120 + (i % 100))
+        selector.evaluate(candidate(frame, elapsedMs, { sourceIndex: i, pts: i * 4500, ptsTime: elapsedMs / 1000 }))
+    }
+
+    expensiveComparisons = 0
+    const result = selector.finalizeBuffered()
+
+    assert.equal(result.selected.length, 3)
+    assert.ok(
+        expensiveComparisons < 2000,
+        `88-candidate finalization performed ${expensiveComparisons} expensive luma comparisons; pair distances must be reused`
+    )
+})
