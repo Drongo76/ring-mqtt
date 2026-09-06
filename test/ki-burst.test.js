@@ -11,7 +11,7 @@ import {
 import { captureBurstWithCleanup } from '../lib/ki-burst-worker-session.js'
 import {
     buildBurstFfmpegArgs,
-    candidateFilenameForPts,
+    candidateFilenameForSourceIndex,
     DEFAULT_KI_BURST_HARD_SAFETY_TIMEOUT_MS,
     parseShowinfoFrameLine
 } from '../lib/streaming/build12-streaming-session.js'
@@ -117,6 +117,7 @@ test('KI Burst opens one dedicated session with buffered observation and complet
     assert.equal(details.observationWindowMs, 6000)
     assert.equal(details.candidateFramesEvaluated, 62)
     assert.deepEqual(details.actualFrameOffsetsMs, [0, 3200, 6050])
+    assert.deepEqual(details.targetFrameOffsetsMs, [])
     assert.deepEqual(details.pairwiseDifferenceScores, pairwiseDifferenceScores)
     assert.deepEqual(details.selectionReasons, ['first_clean_frame', 'global_diversity', 'global_diversity'])
     assert.equal(details.firstCleanFrameAt, '2026-09-06T08:00:00.000Z')
@@ -161,31 +162,42 @@ test('burst frame normalization accepts worker Uint8Array payloads and preserves
 })
 
 test('ffmpeg emits every decoded frame to paired full-JPEG and luma branches without fixed selection offsets', () => {
-    const args = buildBurstFfmpegArgs({ candidatePattern: '/tmp/candidate-%d.jpg' })
+    const args = buildBurstFfmpegArgs({ candidatePattern: '/tmp/candidate-%06d.jpg' })
     const filter = args[args.indexOf('-filter_complex') + 1]
-    assert.match(filter, /setpts=PTS-STARTPTS,showinfo,split=2/)
+    assert.match(filter, /setpts=PTS-STARTPTS,showinfo@decoded,split=2/)
+    assert.match(filter, /showinfo@full/)
     assert.match(filter, /scale=160:90/)
+    assert.match(filter, /showinfo@luma/)
     assert.equal(filter.includes('select='), false)
     assert.equal(filter.includes('fps='), false)
     assert.equal(args.includes('-frames:v'), false)
     assert.equal(args.includes('+discardcorrupt'), true)
     assert.equal(args.includes('rawvideo'), true)
     assert.equal(args.includes('image2'), true)
-    assert.equal(args[args.indexOf('-frame_pts') + 1], '1')
-    assert.equal(args.at(-1), '/tmp/candidate-%d.jpg')
+    assert.equal(args[args.indexOf('-start_number') + 1], '0')
+    assert.equal(args.includes('-frame_pts'), false)
+    assert.equal(args.at(-1), '/tmp/candidate-%06d.jpg')
 })
 
-test('full-resolution JPEG filename is keyed by the exact analyzed decoder PTS', () => {
-    const line = '[Parsed_showinfo_1 @ 0x123] n:  17 pts:  288000 pts_time:3.2 duration:3000 fmt:yuv420p iskey:0 type:P checksum:ABCDEF12'
-    const diagnostic = parseShowinfoFrameLine(line, '2026-09-06T08:00:03.200Z')
-    assert.equal(diagnostic.index, 17)
-    assert.equal(diagnostic.pts, 288000)
-    assert.equal(candidateFilenameForPts(diagnostic.pts), 'candidate-288000.jpg')
+test('decoded, full JPEG branch and luma branch carry the exact same source index and PTS', () => {
+    const decoded = parseShowinfoFrameLine('[Parsed_showinfo@decoded_0 @ 0x1] n:  17 pts:  288000 pts_time:3.2 type:P checksum:AAAA1111')
+    const full = parseShowinfoFrameLine('[Parsed_showinfo@full_1 @ 0x2] n:  17 pts:  288000 pts_time:3.2 type:P checksum:AAAA1111')
+    const luma = parseShowinfoFrameLine('[Parsed_showinfo@luma_2 @ 0x3] n:  17 pts:  288000 pts_time:3.2 type:P checksum:BBBB2222')
+
+    assert.equal(decoded.stage, 'decoded')
+    assert.equal(full.stage, 'full')
+    assert.equal(luma.stage, 'luma')
+    assert.equal(decoded.index, full.index)
+    assert.equal(decoded.index, luma.index)
+    assert.equal(decoded.pts, full.pts)
+    assert.equal(decoded.pts, luma.pts)
+    assert.equal(candidateFilenameForSourceIndex(decoded.index), 'candidate-000017.jpg')
 })
 
 test('showinfo parser exposes decoder PTS and timestamp diagnostics', () => {
     const line = '[Parsed_showinfo_2 @ 0x123] n:   1 pts:  78000 pts_time:0.866667 duration:3000 fmt:yuv420p iskey:0 type:P checksum:ABCDEF12'
     const frame = parseShowinfoFrameLine(line, '2026-09-05T17:00:00.867Z')
+    assert.equal(frame.stage, 'decoded')
     assert.equal(frame.index, 1)
     assert.equal(frame.pts, 78000)
     assert.equal(frame.ptsTime, 0.866667)
