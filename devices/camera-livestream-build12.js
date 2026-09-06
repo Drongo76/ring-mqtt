@@ -194,7 +194,12 @@ async function handleCommand(data) {
 
 parentPort.on('message', data => {
     if (data.command === 'stop') {
-        stopActive(data.reason || 'stop')
+        const reason = data.reason || 'stop'
+        if (reason === 'live-allow-off' && active?.kind === 'burst') {
+            post('log_info', { data: `Ignoring Live Allow OFF worker stop while KI Burst ${active.burstId} owns the dedicated WebRTC session` })
+            return
+        }
+        stopActive(reason)
             .catch(error => post('log_error', { data: error?.stack || error?.message || String(error) }))
         return
     }
