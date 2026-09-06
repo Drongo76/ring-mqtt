@@ -24,7 +24,6 @@ async function stopActive(reason = 'stop') {
     const current = active
     if (!current) return
 
-    // Invalidate first so stale callbacks from this session cannot mutate the next one.
     active = null
     try {
         current.session.stop()
@@ -106,8 +105,6 @@ async function startBurst(data) {
         onCleanup: () => post('log_info', { data: `KI Burst ${data.burstId} session stopped/cleanup complete` })
     })
 
-    // A stop/cancel can run immediately while capture is in progress. If this
-    // session was invalidated, do not publish a late success/failure result.
     if (!isCurrent(id)) return
     active = null
 
@@ -122,12 +119,19 @@ async function startBurst(data) {
 
     result.frames.forEach((_, index) => {
         const pts = result.framePts?.[index] ?? 'n/a'
-        const elapsed = result.frameOffsetsMs?.[index] ?? 'n/a'
+        const elapsed = result.actualFrameOffsetsMs?.[index] ?? 'n/a'
         const hash = result.frameHashes?.[index] ?? 'n/a'
         const type = result.frameTypes?.[index] ?? 'n/a'
+        const score = result.differenceScores?.[index] ?? 'n/a'
+        const ratio = result.changedBlockRatios?.[index] ?? 'n/a'
+        const reason = result.selectionReasons?.[index] ?? 'n/a'
         post('log_info', {
-            data: `KI Burst ${data.burstId} frame ${index + 1} captured pts=${pts} elapsed=${elapsed}ms type=${type} hash=${hash}`
+            data: `KI Burst ${data.burstId} frame ${index + 1} selected pts=${pts} elapsed=${elapsed}ms type=${type} hash=${hash} diff=${score} changedBlocks=${ratio} reason=${reason}`
         })
+    })
+
+    post('log_info', {
+        data: `KI Burst ${data.burstId} adaptive selection candidates=${result.candidateFramesEvaluated} threshold=${result.selectionThreshold} reasons=${result.selectionReasons?.join('/')}`
     })
 
     post('burst_complete', {
@@ -135,9 +139,15 @@ async function startBurst(data) {
         frames: result.frames,
         paths: result.paths,
         capturedAt: result.capturedAt,
-        intervalMs: result.intervalMs,
+        selectionMode: result.selectionMode,
+        candidateFramesEvaluated: result.candidateFramesEvaluated,
         frameOffsetsMs: result.frameOffsetsMs,
-        targetFrameOffsetsMs: result.targetFrameOffsetsMs,
+        actualFrameOffsetsMs: result.actualFrameOffsetsMs,
+        differenceScores: result.differenceScores,
+        changedBlockRatios: result.changedBlockRatios,
+        selectionReasons: result.selectionReasons,
+        selectionThreshold: result.selectionThreshold,
+        minimumSelectionSeparationMs: result.minimumSelectionSeparationMs,
         framePts: result.framePts,
         framePtsTime: result.framePtsTime,
         frameTimestamps: result.frameTimestamps,
@@ -146,7 +156,7 @@ async function startBurst(data) {
         frameHashes: result.frameHashes,
         rtpIntegrity: result.rtpIntegrity
     })
-    post('log_info', { data: `KI Burst ${data.burstId} complete: exactly 3 clean decoded frames captured` })
+    post('log_info', { data: `KI Burst ${data.burstId} complete: exactly 3 clean decoded frames captured with adaptive selection` })
 }
 
 async function handleCommand(data) {
@@ -164,8 +174,6 @@ async function handleCommand(data) {
 
 parentPort.on('message', data => {
     if (data.command === 'stop') {
-        // Stop must be able to interrupt an in-flight burst immediately; do not
-        // serialize it behind the long-running burst promise.
         stopActive(data.reason || 'stop')
             .catch(error => post('log_error', { data: error?.stack || error?.message || String(error) }))
         return
