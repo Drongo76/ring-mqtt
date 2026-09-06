@@ -32,9 +32,9 @@ class JitterAwareH264DecoderHarness {
         frame.packets.set(parsed.sequenceNumber, parsed)
         if (parsed.marker) frame.markerSequence = parsed.sequenceNumber
 
-        // This deliberately models the tolerance normal live gets from forwarding
-        // every RTP packet into ffmpeg's RTP/jitter handling: marker may arrive before
-        // the earlier fragment, and the frame becomes decodable once both are present.
+        // Models the tolerance normal live gets from forwarding every RTP packet
+        // into ffmpeg's RTP/jitter handling: marker may arrive before an earlier
+        // fragment, and the frame becomes decodable once the whole AU is present.
         if (frame.markerSequence === null) return
         const idrStarts = [...frame.packets.values()].filter(item => {
             const nalType = item.payload[0] & 0x1f
@@ -64,10 +64,10 @@ async function assertSourcePathsStillDifferOnlyAtRtpForwarding() {
     assert.match(burstSource, /this\.onVideoRtp\.subscribe\(rtp => \{\s*const result = gate\.push\(rtp\.serialize\(\)\)\s*if \(!result\?\.accepted\) return/s)
 }
 
-test('normal live RTP ordering reaches first frame while current dedicated Burst gate must not stall on the same reordered IDR', async () => {
+test('normal live RTP ordering reaches first frame and dedicated Burst reaches parity for the same reordered IDR', async () => {
     await assertSourcePathsStillDifferOnlyAtRtpForwarding()
 
-    // Matches the observed normal-live ordering: signaling succeeds, ffmpeg is made
+    // Matches the actual normal-live event ordering: signaling succeeds, ffmpeg is
     // ready before peer connection reports connected, and RTP follows afterwards.
     const normalTimeline = [
         'worker_start',
@@ -79,10 +79,7 @@ test('normal live RTP ordering reaches first frame while current dedicated Burst
     const burstTimeline = [...normalTimeline]
     assert.deepEqual(burstTimeline, normalTimeline)
 
-    // One two-packet FU-A IDR access unit delivered with the marker/end packet first.
-    // Normal live forwards both packets as they arrive and leaves reordering to ffmpeg.
-    // Current Burst H264RtpFrameGate finalizes immediately on the marker packet,
-    // deletes that frame, and the later IDR-start packet can no longer complete it.
+    // One two-packet FU-A IDR access unit delivered with marker/end first.
     const idrStart = Buffer.from([0x7c, 0x85, 0x01])
     const idrEnd = Buffer.from([0x7c, 0x45, 0x02])
     const arrival = [
@@ -108,14 +105,14 @@ test('normal live RTP ordering reaches first frame while current dedicated Burst
     }
 
     const stats = gate.snapshotStats()
-    assert.equal(stats.waitingForKeyframe, 1)
-    assert.equal(burstForwardedPackets, 0)
-
-    // Desired parity. This assertion is intentionally red on unmodified build-17:
-    // the dedicated Burst path is stuck before ffmpeg can produce the first clean frame.
+    assert.equal(stats.waitingForKeyframe, 0)
+    assert.equal(stats.reorderedPackets, 1)
+    assert.equal(stats.firstForwardedRtpTimestamp, 90000)
+    assert.equal(stats.auDiagnostics.at(-1).finalizeReason, 'complete-after-reorder')
+    assert.equal(burstForwardedPackets, 2)
     assert.equal(
         burstDecoder.cleanFrames,
         1,
-        'dedicated KI Burst must reach the same first clean frame as normal live for the same RTP arrival order'
+        'dedicated KI Burst reaches the same first clean frame as normal live for the same RTP arrival order'
     )
 })
