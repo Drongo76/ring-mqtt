@@ -73,7 +73,7 @@ async function assertSourcePathsStillDifferOnlyAtRtpForwarding() {
     assert.ok(burstVideoPortIndex < burstAnswerIndex, 'dedicated KI Burst must reserve its video port before waiting for the SDP answer')
 
     assert.match(normalSource, /this\.onVideoRtp\.pipe\(concatMap\(\(rtp\) => \{\s*return this\.videoSplitter\.send\(rtp\.serialize\(\), \{ port: videoPort \}\)/s)
-    assert.match(burstSource, /this\.onVideoRtp\.subscribe\(rtp => \{\s*const result = gate\.push\(rtp\.serialize\(\)\)\s*if \(!result\?\.accepted\) return/s)
+    assert.match(burstSource, /this\.onVideoRtp\.subscribe\(rtp => \{\s*const serialized = rtp\.serialize\(\)[\s\S]*?const result = gate\.push\(serialized\)\s*if \(!result\?\.accepted\) return/s)
 }
 
 test('normal live RTP ordering reaches first frame and dedicated Burst reaches parity for the same reordered IDR', async () => {
