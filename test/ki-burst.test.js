@@ -12,6 +12,7 @@ import { captureBurstWithCleanup } from '../lib/ki-burst-worker-session.js'
 import {
     buildBurstFfmpegArgs,
     candidateFilenameForSourceIndex,
+    DEFAULT_KI_BURST_CANDIDATE_INTERVAL_MS,
     DEFAULT_KI_BURST_HARD_SAFETY_TIMEOUT_MS,
     parseShowinfoFrameLine
 } from '../lib/streaming/build12-streaming-session.js'
@@ -161,14 +162,14 @@ test('burst frame normalization accepts worker Uint8Array payloads and preserves
     assert.equal(frames.length, 3)
 })
 
-test('ffmpeg emits every decoded frame to paired full-JPEG and luma branches without fixed selection offsets', () => {
+test('ffmpeg restores the build-14 monotonic PTS gate before paired JPEG and luma branches', () => {
     const args = buildBurstFfmpegArgs({ candidatePattern: '/tmp/candidate-%06d.jpg' })
     const filter = args[args.indexOf('-filter_complex') + 1]
-    assert.match(filter, /setpts=PTS-STARTPTS,showinfo@decoded,split=2/)
+    assert.equal(DEFAULT_KI_BURST_CANDIDATE_INTERVAL_MS, 50)
+    assert.match(filter, /setpts=PTS-STARTPTS,select='isnan\(prev_selected_t\)\+gte\(t-prev_selected_t,0\.05\)',showinfo@decoded,split=2/)
     assert.match(filter, /showinfo@full/)
     assert.match(filter, /scale=160:90/)
     assert.match(filter, /showinfo@luma/)
-    assert.equal(filter.includes('select='), false)
     assert.equal(filter.includes('fps='), false)
     assert.equal(args.includes('-frames:v'), false)
     assert.equal(args.includes('+discardcorrupt'), true)
