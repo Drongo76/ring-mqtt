@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
     KiBurstController,
     normalizeBurstFrames,
+    KI_BURST_CONTROLLER_FINALIZATION_GRACE_MS,
     KI_BURST_CONTROLLER_TIMEOUT_MS,
     KI_BURST_INTERVAL_MS,
     KI_BURST_OBSERVATION_WINDOW_MS,
@@ -14,6 +15,7 @@ import {
     candidateFilenameForSourceIndex,
     DEFAULT_KI_BURST_CANDIDATE_INTERVAL_MS,
     DEFAULT_KI_BURST_HARD_SAFETY_TIMEOUT_MS,
+    getObservationStopDelayMs,
     parseShowinfoFrameLine
 } from '../lib/streaming/build12-streaming-session.js'
 import { H264RtpFrameGate, parseRtpPacket, payloadStartsH264Idr } from '../lib/streaming/h264-rtp-frame-gate.js'
@@ -128,13 +130,16 @@ test('KI Burst opens one dedicated session with buffered observation and complet
     assert.equal(fixture.sent.some(message => message.command === 'start'), false)
 })
 
-test('controller and worker hard deadlines remain below the existing 15 second HA wait', () => {
+test('build-25 safety budgets preserve the full observation window after slow WebRTC startup', () => {
     assert.equal(KI_BURST_OBSERVATION_WINDOW_MS, 6000)
     assert.equal(KI_BURST_INTERVAL_MS, 1000)
-    assert.equal(KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS, 12500)
-    assert.equal(DEFAULT_KI_BURST_HARD_SAFETY_TIMEOUT_MS, 12500)
-    assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, 13000)
-    assert.ok(KI_BURST_CONTROLLER_TIMEOUT_MS < 15000)
+    assert.equal(KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS, 25000)
+    assert.equal(DEFAULT_KI_BURST_HARD_SAFETY_TIMEOUT_MS, 25000)
+    assert.equal(KI_BURST_CONTROLLER_FINALIZATION_GRACE_MS, 5000)
+    assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, 30000)
+    assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS + KI_BURST_CONTROLLER_FINALIZATION_GRACE_MS)
+    assert.equal(getObservationStopDelayMs(6000, 25000, 12500), 6000)
+    assert.ok(KI_BURST_CONTROLLER_TIMEOUT_MS > 13000)
 })
 
 test('KI Burst timeout stops the worker and cannot be resurrected by a late completion callback', async () => {
