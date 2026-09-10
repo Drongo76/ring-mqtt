@@ -844,7 +844,7 @@ publishEventSelectState(isPublish) {
         let attemptsRemaining = snapshotRetryAttempts
         const previousSnapshot = this.data.snapshot.cache
         const previousSourceTimestamp = this.data.snapshot.sourceTimestamp
-        const refreshGeneration = ++this.snapshotRefreshGeneration
+        const refreshGeneration = type === 'interval' ? null : ++this.snapshotRefreshGeneration
 
         if (this.device.snapshotsAreBlocked) {
             this.debug('Snapshots are unavailable, check if motion capture is disabled manually or via modes settings')
@@ -911,7 +911,7 @@ publishEventSelectState(isPublish) {
         }
 
         if (newSnapshot) {
-            if (refreshGeneration !== this.snapshotRefreshGeneration) {
+            if (type !== 'interval' && refreshGeneration !== this.snapshotRefreshGeneration) {
                 this.debug(`Discarding superseded ${type} snapshot because a newer snapshot request started`)
                 return false
             }
