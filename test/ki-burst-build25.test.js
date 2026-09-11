@@ -62,13 +62,33 @@ function completionDetails(paths) {
         paths,
         frameCount: 3,
         frameSourceIndices: [0, 54, 68],
-        frameHashes: [Buffer.from('HASH_A'), Buffer.from('HASH_B'), Buffer.from('HASH_C')].map(kiBurstFrameHash),
-        candidateEvaluations: [
-            { index: 0, reason: 'first_clean_frame', selectedImmediately: true },
-            { index: 54, reason: 'buffered_visual_change', selectedImmediately: false },
-            { index: 68, reason: 'buffered_candidate', selectedImmediately: false }
+        frameOffsetsMs: [0, 1250, 2500],
+        actualFrameOffsetsMs: [0, 1250, 2500],
+        differenceScores: [0, 0.1, 0.2],
+        changedBlockRatios: [0, 0.12, 0.22],
+        pairwiseDifferenceScores: [
+            { pair: 'F1-F2', score: 0.22, differenceScore: 0.1, changedBlockRatio: 0.12 },
+            { pair: 'F2-F3', score: 0.35, differenceScore: 0.15, changedBlockRatio: 0.2 },
+            { pair: 'F1-F3', score: 0.41, differenceScore: 0.19, changedBlockRatio: 0.22 }
         ],
-        selectionReasons: ['first_clean_frame', 'early_visual_change_primary', 'compatibility_tail'],
+        totalDiversityScore: 0.98,
+        framePts: [100, 200, 300],
+        framePtsTime: [0, 1.25, 2.5],
+        frameTimestamps: [
+            '2026-09-11T10:00:04.300Z',
+            '2026-09-11T10:00:05.550Z',
+            '2026-09-11T10:00:06.800Z'
+        ],
+        frameTypes: ['I', 'P', 'P'],
+        frameRawChecksums: ['RAW_A', 'RAW_B', 'RAW_C'],
+        frameHashes: [Buffer.from('HASH_A'), Buffer.from('HASH_B'), Buffer.from('HASH_C')].map(kiBurstFrameHash),
+        candidateEvaluations: Array.from({ length: 256 }, (_, index) => ({
+            index,
+            reason: index === 0 ? 'first_clean_frame' : 'buffered_candidate',
+            selectedImmediately: index === 0,
+            diagnosticPadding: 'x'.repeat(128)
+        })),
+        selectionReasons: ['first_clean_frame', 'early_low_diversity_fallback', 'compatibility_tail'],
         selectionMode: 'adaptive_buffered',
         observationWindowMs: 6000,
         minimumSelectionSeparationMs: 1000
@@ -126,17 +146,34 @@ test('final publication keeps Motion Snapshot as F1 and publishes selected[0]/se
         assert.equal(camera.publishes.find(entry => entry.topic === 'status').payload, 'complete')
 
         const attrs = JSON.parse(camera.publishes.find(entry => entry.topic === 'status/attr').payload)
-        assert.deepEqual(attrs.frameSourceIndices, [0, 54, 68], 'selector diagnostics remain available internally')
+        assert.deepEqual(attrs.frameSourceIndices, [null, 0, 54], 'public frameSourceIndices must describe final Snapshot/selected[0]/selected[1]')
         assert.deepEqual(attrs.outputFrameSourceIndices, [null, 0, 54])
         assert.deepEqual(attrs.outputFrameSources, ['motion_snapshot', 'adaptive_selected_2', 'adaptive_selected_3'])
-        assert.equal(attrs.frameHashes[1], attrs.selectorFrameHashes[0], 'published Frame2 hash must map to selector selected[0]')
-        assert.equal(attrs.frameHashes[2], attrs.selectorFrameHashes[1], 'published Frame3 hash must map to selector selected[1]')
+        assert.deepEqual(attrs.selectionReasons, ['motion_snapshot', 'first_clean_frame', 'early_low_diversity_fallback'])
+        assert.equal(attrs.selectionReasons.length, 3)
+        assert.equal(attrs.selectionReasons.includes('compatibility_tail'), false)
+        assert.equal(JSON.stringify(attrs).includes('compatibility_tail'), false, 'compatibility tail must not leak anywhere into public MQTT metadata')
+        assert.deepEqual(attrs.frameOffsetsMs, [null, 0, 1250])
+        assert.deepEqual(attrs.actualFrameOffsetsMs, [null, 0, 1250])
+        assert.deepEqual(attrs.differenceScores, [null, 0, 0.1])
+        assert.deepEqual(attrs.changedBlockRatios, [null, 0, 0.12])
+        assert.deepEqual(attrs.pairwiseDifferenceScores, [
+            { pair: 'F2-F3', score: 0.22, differenceScore: 0.1, changedBlockRatio: 0.12 }
+        ])
+        assert.equal(attrs.totalDiversityScore, null, 'selector-wide diversity includes compatibility_tail and must not masquerade as final-triple diversity')
+        assert.deepEqual(attrs.framePts, [null, 100, 200])
+        assert.deepEqual(attrs.framePtsTime, [null, 0, 1.25])
+        assert.deepEqual(attrs.frameTypes, [null, 'I', 'P'])
+        assert.deepEqual(attrs.frameRawChecksums, [null, 'RAW_A', 'RAW_B'])
+        assert.equal(attrs.frameTimestamps[0], '1970-01-01T00:01:40.000Z')
+        assert.deepEqual(attrs.frameTimestamps.slice(1), ['2026-09-11T10:00:04.300Z', '2026-09-11T10:00:05.550Z'])
+        assert.equal(attrs.frameHashes[1], kiBurstFrameHash(Buffer.from('HASH_A')), 'published Frame2 hash must map to selector selected[0]')
+        assert.equal(attrs.frameHashes[2], kiBurstFrameHash(Buffer.from('HASH_B')), 'published Frame3 hash must map to selector selected[1]')
         assert.equal(attrs.frameHashes[1], kiBurstFrameHash(finalFrame2), 'published Frame2 hash must match final frame-2 JPEG bytes')
         assert.equal(attrs.frameHashes[2], kiBurstFrameHash(finalFrame3), 'published Frame3 hash must match final frame-3 JPEG bytes')
-        assert.equal(Object.hasOwn(attrs, 'candidateEvaluations'), false, 'candidateEvaluations must remain internal and must not publish stale final-frame naming')
-        assert.deepEqual(attrs.selectionReasons, ['first_clean_frame', 'early_visual_change_primary', 'compatibility_tail'])
-        assert.equal(attrs.selectionReasons.some(reason => /^adaptive_selected_[12]$/.test(reason)), false, 'published selection metadata must not call old selector positions final F2/F3')
-        assert.equal(attrs.frameHashes[0] === attrs.selectorFrameHashes[0], false, 'published Frame1 hash must describe the Motion Snapshot, not selector selected[0]')
+        assert.equal(Object.hasOwn(attrs, 'selectorFrameHashes'), false, 'internal selector hashes must not be exposed as final-frame metadata')
+        assert.equal(Object.hasOwn(attrs, 'candidateEvaluations'), false, 'candidateEvaluations must remain internal/debug only')
+        assert.ok(Buffer.byteLength(JSON.stringify(attrs), 'utf8') < 8192, 'public metadata must stay compact for Recorder')
     } finally {
         await rm(dir, { recursive: true, force: true })
     }
