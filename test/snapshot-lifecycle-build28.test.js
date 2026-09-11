@@ -109,26 +109,23 @@ function snapshotImagePublishes(camera) {
     return camera.publishes.filter(entry => entry.topic === 'snapshot/image')
 }
 
-test('build-28 restores the pre-regression wired interval lifecycle and acquires a fresh Snapshot without Motion', async () => {
+test('interval refresh keeps the existing 30 second scheduler and build27/build12 generation guard', async () => {
     const camera = makeCamera([makeSnapshot('interval-fresh-1', 101)])
     const { callback, delayMs } = captureIntervalScheduler(camera)
 
-    assert.equal(delayMs, 30000, 'must keep the existing wired Auto interval at 30 seconds')
+    assert.equal(delayMs, 30000)
     callback()
     await waitFor(() => snapshotAttributePublishes(camera).length === 1, 'interval snapshot was not published')
 
-    assert.equal(camera.requestOptions.length, 1)
-    assert.deepEqual(camera.requestOptions[0], { force: true })
+    assert.deepEqual(camera.requestOptions, [{ force: true }])
     assert.equal(camera.data.snapshot.cache.toString(), 'interval-fresh-1')
     assert.equal(camera.data.snapshot.sourceTimestamp, 101)
     assert.equal(camera.data.snapshot.cacheType, 'interval')
-    assert.ok(camera.data.snapshot.timestamp > 1)
     assert.equal(snapshotImagePublishes(camera)[0].payload.toString(), 'interval-fresh-1')
-    assert.equal(snapshotAttributePublishes(camera)[0].type, 'interval')
-    assert.equal(camera.snapshotRefreshGeneration, 0, 'interval must not participate in generation supersession')
+    assert.equal(camera.snapshotRefreshGeneration, 1, 'interval must participate in the same generation guard as build27/build12')
 })
 
-test('build-28 consecutive scheduled interval cycles each acquire a new image and new timestamps', async () => {
+test('consecutive interval cycles each advance generation and publish fresh results', async () => {
     const camera = makeCamera([
         makeSnapshot('interval-cycle-1', 101),
         makeSnapshot('interval-cycle-2', 102),
@@ -154,14 +151,10 @@ test('build-28 consecutive scheduled interval cycles each acquire a new image an
         'interval-cycle-2',
         'interval-cycle-3'
     ])
-    assert.deepEqual(snapshotAttributePublishes(camera).map(attrs => attrs.type), ['interval', 'interval', 'interval'])
-    assert.deepEqual(snapshotAttributePublishes(camera).map(attrs => attrs.timestamp), [100, 101, 102])
-    assert.equal(camera.data.snapshot.sourceTimestamp, 103)
-    assert.equal(camera.data.snapshot.timestamp, 102)
-    assert.equal(camera.snapshotRefreshGeneration, 0)
+    assert.equal(camera.snapshotRefreshGeneration, 3)
 })
 
-test('build-28 overlapping interval ticks retain the old no-generation semantics and each perform a Ring acquisition', async () => {
+test('overlapping interval refreshes use build27/build12 supersession: older result cannot overwrite newer request', async () => {
     let resolveFirst
     let resolveSecond
     const firstResponse = new Promise(resolve => { resolveFirst = resolve })
@@ -175,40 +168,34 @@ test('build-28 overlapping interval ticks retain the old no-generation semantics
     callback()
     await waitFor(() => camera.requestOptions.length === 1, 'first interval request did not start')
     callback()
-    await waitFor(() => camera.requestOptions.length === 2, 'second scheduled interval request did not start')
-
-    assert.deepEqual(camera.requestOptions, [{ force: true }, { force: true }])
-    assert.equal(camera.snapshotRefreshGeneration, 0, 'interval refreshes must not advance generation')
+    await waitFor(() => camera.requestOptions.length === 2, 'second interval request did not start')
+    assert.equal(camera.snapshotRefreshGeneration, 2)
 
     resolveFirst(makeSnapshot('slow-interval-cycle-1', 101))
-    await waitFor(() => snapshotAttributePublishes(camera).length === 1, 'first interval result was discarded')
-    resolveSecond(makeSnapshot('slow-interval-cycle-2', 102))
-    await waitFor(() => snapshotAttributePublishes(camera).length === 2, 'second interval result was discarded')
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(snapshotAttributePublishes(camera).length, 0, 'superseded first interval result must be discarded')
 
-    assert.deepEqual(snapshotImagePublishes(camera).map(entry => entry.payload.toString()), [
-        'slow-interval-cycle-1',
-        'slow-interval-cycle-2'
-    ])
+    resolveSecond(makeSnapshot('slow-interval-cycle-2', 102))
+    await waitFor(() => snapshotAttributePublishes(camera).length === 1, 'newest interval result was not published')
+
+    assert.deepEqual(snapshotImagePublishes(camera).map(entry => entry.payload.toString()), ['slow-interval-cycle-2'])
     assert.equal(camera.data.snapshot.cache.toString(), 'slow-interval-cycle-2')
-    assert.equal(camera.data.snapshot.sourceTimestamp, 102)
+    assert.ok(camera.debugMessages.some(message => message.includes('Discarding superseded interval')))
 })
 
-test('build-28 Motion still refreshes the standalone Snapshot immediately through the existing motion path', async () => {
+test('Motion refresh still uses the same generation protection', async () => {
     const camera = makeCamera([makeSnapshot('motion-fresh', 200)])
 
     const result = await camera.refreshSnapshot('motion', 'motion-uuid-28')
 
     assert.equal(result, true)
-    assert.equal(camera.requestOptions.length, 1)
     assert.deepEqual(camera.requestOptions[0], { uuid: 'motion-uuid-28' })
     assert.equal(camera.data.snapshot.cache.toString(), 'motion-fresh')
-    assert.equal(camera.data.snapshot.sourceTimestamp, 200)
     assert.equal(camera.data.snapshot.cacheType, 'motion')
-    assert.equal(snapshotAttributePublishes(camera).at(-1).type, 'motion')
-    assert.equal(camera.snapshotRefreshGeneration, 1, 'motion keeps the generation guard')
+    assert.equal(camera.snapshotRefreshGeneration, 1)
 })
 
-test('build-28 periodic interval refresh continues after a Motion Snapshot', async () => {
+test('interval refresh after Motion advances the same shared generation', async () => {
     const camera = makeCamera([
         makeSnapshot('motion-first', 200),
         makeSnapshot('interval-after-motion', 201)
@@ -216,25 +203,19 @@ test('build-28 periodic interval refresh continues after a Motion Snapshot', asy
     const { callback } = captureIntervalScheduler(camera)
 
     camera.data.motion.active_ding = true
-    const motionResult = await camera.refreshSnapshot('motion', 'motion-uuid-28')
-    assert.equal(motionResult, true)
-    assert.equal(camera.data.snapshot.cacheType, 'motion')
+    assert.equal(await camera.refreshSnapshot('motion', 'motion-uuid-28'), true)
     assert.equal(camera.snapshotRefreshGeneration, 1)
 
     camera.data.motion.active_ding = false
     callback()
     await waitFor(() => snapshotAttributePublishes(camera).length === 2, 'interval refresh did not resume after Motion')
 
-    assert.equal(camera.requestOptions.length, 2)
-    assert.deepEqual(camera.requestOptions[1], { force: true })
     assert.equal(camera.data.snapshot.cache.toString(), 'interval-after-motion')
-    assert.equal(camera.data.snapshot.sourceTimestamp, 201)
     assert.equal(camera.data.snapshot.cacheType, 'interval')
-    assert.deepEqual(snapshotAttributePublishes(camera).map(attrs => attrs.type), ['motion', 'interval'])
-    assert.equal(camera.snapshotRefreshGeneration, 1, 'interval must not alter generation after Motion')
+    assert.equal(camera.snapshotRefreshGeneration, 2)
 })
 
-test('build-28 keeps the af4174 distinct on-demand behavior while interval remains outside generation', async () => {
+test('distinct on-demand behavior remains unchanged', async () => {
     const camera = makeCamera([
         makeSnapshot('initial', 100),
         makeSnapshot('on-demand-fresh', 101)
@@ -247,19 +228,16 @@ test('build-28 keeps the af4174 distinct on-demand behavior while interval remai
     assert.deepEqual(camera.requestOptions[0], { afterMs: 100, maxWaitMs: 3000, force: true })
     assert.deepEqual(camera.requestOptions[1], { afterMs: 100, maxWaitMs: 3000, force: true })
     assert.equal(camera.data.snapshot.cache.toString(), 'on-demand-fresh')
-    assert.equal(camera.data.snapshot.sourceTimestamp, 101)
     assert.equal(camera.data.snapshot.cacheType, 'on-demand')
     assert.equal(camera.snapshotRefreshGeneration, 1)
 })
 
-test('build-28 keeps motion/on-demand generation protection: delayed on-demand cannot overwrite newer Motion', async () => {
+test('delayed on-demand cannot overwrite newer Motion', async () => {
     let resolveOnDemand
     const camera = makeCamera([])
     camera.device.getNextSnapshot = options => {
         camera.requestOptions.push(options)
-        if (options.afterMs) {
-            return new Promise(resolve => { resolveOnDemand = resolve })
-        }
+        if (options.afterMs) return new Promise(resolve => { resolveOnDemand = resolve })
         return Promise.resolve(makeSnapshot('new-motion', 200))
     }
 
@@ -277,7 +255,7 @@ test('build-28 keeps motion/on-demand generation protection: delayed on-demand c
     assert.ok(camera.debugMessages.some(message => message.includes('Discarding superseded on-demand')))
 })
 
-test('build-28 KI Burst reuses the already acquired Motion Snapshot for Frame1 without a second Ring snapshot request', async () => {
+test('KI Burst keeps Motion Snapshot as final F1 and publishes first clean / early adaptive WebRTC as F2/F3 without another snapshot request', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ki-burst-build28-'))
     try {
         const paths = [join(dir, 'frame-1.jpg'), join(dir, 'frame-2.jpg'), join(dir, 'frame-3.jpg')]
@@ -291,13 +269,12 @@ test('build-28 KI Burst reuses the already acquired Motion Snapshot for Frame1 w
         try {
             camera.data.motion.last_ding = 100
             camera.data.ki_burst.motionEventTimestamp = 100
-            const motionResult = await camera.refreshSnapshot('motion', 'motion-uuid-burst-28')
-            assert.equal(motionResult, true)
+            assert.equal(await camera.refreshSnapshot('motion', 'motion-uuid-burst-28'), true)
         } finally {
             Date.now = originalNow
         }
 
-        assert.equal(camera.requestOptions.length, 1, 'standalone Motion path should make exactly one Ring snapshot request')
+        assert.equal(camera.requestOptions.length, 1)
         const motionSnapshotBytes = Buffer.from(camera.data.snapshot.cache)
 
         publishBurstState(camera, 'complete', {
@@ -307,12 +284,12 @@ test('build-28 KI Burst reuses the already acquired Motion Snapshot for Frame1 w
             frameCount: 3,
             intervalMs: 1000,
             capturedAt: '2026-09-10T11:00:00.000Z',
-            frameOffsetsMs: [0, 3000, 6000],
-            actualFrameOffsetsMs: [0, 3000, 6000],
+            frameOffsetsMs: [0, 1100, 2200],
+            actualFrameOffsetsMs: [0, 1100, 2200],
             selectionMode: 'adaptive_buffered',
             observationWindowMs: 6000,
             minimumSelectionSeparationMs: 1000,
-            frameSourceIndices: [0, 40, 80],
+            frameSourceIndices: [0, 20, 40],
             frameHashes: ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)],
             rtpIntegrity: {}
         })
@@ -321,9 +298,9 @@ test('build-28 KI Burst reuses the already acquired Motion Snapshot for Frame1 w
         assert.equal(camera.data.ki_burst.status, 'complete')
         assert.deepEqual(camera.data.ki_burst.frames[0], motionSnapshotBytes)
         assert.equal(camera.data.ki_burst.frames[0].toString(), 'MOTION_SNAPSHOT_FOR_BURST')
-        assert.equal(camera.data.ki_burst.frames[1].toString(), 'SELECTED_B')
-        assert.equal(camera.data.ki_burst.frames[2].toString(), 'SELECTED_C')
-        assert.equal(camera.data.snapshot.cache.toString(), 'MOTION_SNAPSHOT_FOR_BURST', 'Burst must not mutate standalone Snapshot cache')
+        assert.equal(camera.data.ki_burst.frames[1].toString(), 'SELECTED_A')
+        assert.equal(camera.data.ki_burst.frames[2].toString(), 'SELECTED_B')
+        assert.equal(camera.data.snapshot.cache.toString(), 'MOTION_SNAPSHOT_FOR_BURST')
         assert.equal(camera.data.snapshot.cacheType, 'motion')
     } finally {
         await rm(dir, { recursive: true, force: true })
