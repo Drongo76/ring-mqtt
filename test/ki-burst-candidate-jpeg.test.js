@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readdir, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { AdaptiveFrameSelector } from '../lib/streaming/adaptive-frame-selector.js'
+import { AdaptiveFrameSelector, DEFAULT_FALLBACK_SELECTION_WINDOW_MS } from '../lib/streaming/adaptive-frame-selector.js'
 import {
     candidateFilenameForSourceIndex,
     inspectCandidateJpegFiles,
@@ -58,7 +58,7 @@ async function writeCandidateFiles(tempDir, { omit = new Set() } = {}) {
     }
 }
 
-test('88 candidates can select late frame #86 only when its physical JPEG exists and all selected JPEGs read successfully', async () => {
+test('88-candidate physical JPEG inventory supports the early selector and every selected JPEG reads successfully', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'ki-burst-jpeg-'))
     try {
         const selector = makeSelectorWith88Candidates()
@@ -73,12 +73,16 @@ test('88 candidates can select late frame #86 only when its physical JPEG exists
 
         restrictSelectorCandidatesToExistingJpegs(selector, inventory.existingSourceIndices)
         const { selected } = selector.finalizeBuffered()
-        assert.deepEqual(selected.map(candidate => candidate.sourceIndex), [0, 43, 86])
+        assert.equal(selected[0].sourceIndex, 0)
+        assert.deepEqual(selected.map(candidate => candidate.sourceIndex), [0, 15, 30])
+        assert.ok(selected[1].elapsedMs <= DEFAULT_FALLBACK_SELECTION_WINDOW_MS)
+        assert.equal(selected.some(candidate => candidate.sourceIndex === 86), false, 'late frame #86 must not be preferred just because it is visually diverse')
+        assert.ok(selected.every(candidate => inventory.existingSourceIndices.includes(candidate.sourceIndex)))
 
         const loaded = await loadSelectedCandidateJpegs(tempDir, selected)
         assert.equal(loaded.frames.length, 3)
         assert.equal(new Set(loaded.frameHashes).size, 3)
-        assert.deepEqual(loaded.sourceIndices, [0, 43, 86])
+        assert.deepEqual(loaded.sourceIndices, [0, 15, 30])
     } finally {
         await rm(tempDir, { recursive: true, force: true })
     }
@@ -103,6 +107,7 @@ test('missing physical JPEG is removed before final selection so selector cannot
 
         const { selected } = selector.finalizeBuffered()
         assert.equal(selected.some(candidate => candidate.sourceIndex === 86), false)
+        assert.ok(selected.every(candidate => inventory.existingSourceIndices.includes(candidate.sourceIndex)))
         const loaded = await loadSelectedCandidateJpegs(tempDir, selected)
         assert.equal(loaded.frames.length, 3)
         assert.equal(new Set(loaded.frameHashes).size, 3)
