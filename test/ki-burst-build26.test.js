@@ -101,11 +101,11 @@ function completionDetails(paths, rtpIntegrity = makeHeavyRtpIntegrity()) {
         frameCount: 3,
         intervalMs: 1000,
         capturedAt: '2026-09-10T00:00:20.000Z',
-        frameOffsetsMs: [0, 3200, 6050],
+        frameOffsetsMs: [0, 1100, 2200],
         selectionMode: 'adaptive_buffered',
         observationWindowMs: 6000,
         candidateFramesEvaluated: 128,
-        actualFrameOffsetsMs: [0, 3200, 6050],
+        actualFrameOffsetsMs: [0, 1100, 2200],
         differenceScores: [0, 0.061, 0.084],
         changedBlockRatios: [0, 0.1125, 0.1542],
         pairwiseDifferenceScores: [
@@ -114,18 +114,18 @@ function completionDetails(paths, rtpIntegrity = makeHeavyRtpIntegrity()) {
             { pair: 'F1-F3', score: 0.51 }
         ],
         totalDiversityScore: 1.24,
-        selectionReasons: ['first_clean_frame', 'global_diversity', 'global_diversity'],
+        selectionReasons: ['first_clean_frame', 'early_visual_change_primary', 'compatibility_tail'],
         selectionThreshold: 0.08,
         minimumSelectionSeparationMs: 1000,
         firstCleanFrameAt: '2026-09-10T00:00:13.500Z',
         totalBurstDurationMs: 19800,
-        frameSourceIndices: [0, 54, 68],
-        framePts: [0, 288000, 544500],
-        framePtsTime: [0, 3.2, 6.05],
+        frameSourceIndices: [0, 20, 40],
+        framePts: [0, 99000, 198000],
+        framePtsTime: [0, 1.1, 2.2],
         frameTimestamps: [
             '2026-09-10T00:00:13.500Z',
-            '2026-09-10T00:00:16.700Z',
-            '2026-09-10T00:00:19.550Z'
+            '2026-09-10T00:00:14.600Z',
+            '2026-09-10T00:00:15.700Z'
         ],
         frameTypes: ['I', 'P', 'P'],
         frameRawChecksums: ['AAAAAAAA', 'BBBBBBBB', 'CCCCCCCC'],
@@ -211,14 +211,14 @@ test('build-26 complete plus three periodic republishes stay compact and never r
         assert.equal(camera.data.ki_burst.status, 'complete')
         assert.deepEqual(camera.data.ki_burst.frames.map(frame => frame.toString()), [
             'MOTION_SNAPSHOT_FRAME_1',
-            'SELECTED_B',
-            'SELECTED_C'
+            'SELECTED_A',
+            'SELECTED_B'
         ])
         assertCompactPublicRtpIntegrity(camera.data.ki_burst.attributes.rtpIntegrity)
         assert.deepEqual(camera.data.ki_burst.attributes.outputFrameSources, [
             'motion_snapshot',
-            'adaptive_selected_2',
-            'adaptive_selected_3'
+            'adaptive_selected_1',
+            'adaptive_selected_2'
         ])
 
         for (let iteration = 0; iteration < 3; iteration++) {
@@ -244,7 +244,7 @@ test('build-26 complete plus three periodic republishes stay compact and never r
     }
 })
 
-test('build-26 Recorder hotfix leaves build-25 Burst timing behavior unchanged', () => {
+test('build-26 Recorder hotfix leaves Burst safety timing behavior unchanged', () => {
     assert.equal(KI_BURST_OBSERVATION_WINDOW_MS, 6000)
     assert.equal(KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS, 25000)
     assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, 30000)
