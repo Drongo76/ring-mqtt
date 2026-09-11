@@ -1,0 +1,73 @@
+name: Candidate selector tests
+
+on:
+  push:
+    branches: [ "candidate/build-28-early-f2-f3" ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: candidate/build-28-early-f2-f3
+
+      - name: Apply exact snapshot-generation revert and preserve output-file guard
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          camera = Path('devices/camera.js')
+          text = camera.read_text()
+          old1 = "const refreshGeneration = type === 'interval' ? null : ++this.snapshotRefreshGeneration"
+          new1 = "const refreshGeneration = ++this.snapshotRefreshGeneration"
+          old2 = "if (type !== 'interval' && refreshGeneration !== this.snapshotRefreshGeneration) {"
+          new2 = "if (refreshGeneration !== this.snapshotRefreshGeneration) {"
+          if old1 in text:
+              text = text.replace(old1, new1, 1)
+          elif new1 not in text:
+              raise SystemExit('camera.js refreshGeneration line not found')
+          if old2 in text:
+              text = text.replace(old2, new2, 1)
+          elif new2 not in text:
+              raise SystemExit('camera.js generation guard line not found')
+          camera.write_text(text)
+
+          patch = Path('lib/build12-patch.js')
+          text = patch.read_text()
+          old = "            persistKiBurstFrames(details.paths, composed.frames)\n            assertKiBurstOutputFiles(details.paths)"
+          new = "            assertKiBurstOutputFiles(details.paths)\n            persistKiBurstFrames(details.paths, composed.frames)\n            assertKiBurstOutputFiles(details.paths)"
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('build12-patch.js output guard block not found')
+          patch.write_text(text)
+          PY
+
+      - name: Commit exact candidate patch if needed
+        shell: bash
+        run: |
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add devices/camera.js lib/build12-patch.js
+            git commit -m "candidate: restore build27 snapshot generation and output guard"
+            git push origin HEAD:candidate/build-28-early-f2-f3
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run full test suite
+        run: npm test
