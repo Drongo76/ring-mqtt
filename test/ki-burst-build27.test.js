@@ -128,7 +128,7 @@ function completionDetails(paths, rtpIntegrity) {
             { pair: 'F1-F3', score: 0.53 }
         ],
         totalDiversityScore: 1.28,
-        selectionReasons: ['first_clean_frame', 'global_diversity', 'global_diversity'],
+        selectionReasons: ['first_clean_frame', 'early_visual_change_fallback', 'compatibility_tail'],
         selectionThreshold: 0.08,
         minimumSelectionSeparationMs: 1000,
         firstCleanFrameAt: '2026-09-10T07:54:12.150+02:00',
@@ -184,6 +184,14 @@ test('build-27 complete -> immediate build14 publish -> periodic republishes nev
         const firstPublish = JSON.parse(camera.publishes.filter(entry => entry.topic === 'status/attr').at(-1).payload)
         const snapshotFrame1Hash = firstPublish.frameHashes[0]
         assert.notEqual(snapshotFrame1Hash, selectorFrame1Hash, 'Frame1 public hash must describe Motion Snapshot')
+        assert.deepEqual(firstPublish.outputFrameSourceIndices, [null, 0, 54], 'final published source indices must map Snapshot, selected[0], selected[1]')
+        assert.deepEqual(firstPublish.frameSourceIndices, [null, 0, 54], 'generic public source indices must also describe final frames')
+        assert.deepEqual(firstPublish.outputFrameSources, ['motion_snapshot', 'adaptive_selected_2', 'adaptive_selected_3'])
+        assert.deepEqual(firstPublish.selectionReasons, ['motion_snapshot', 'first_clean_frame', 'early_visual_change_fallback'])
+        assert.equal(firstPublish.selectionReasons.includes('compatibility_tail'), false)
+        assert.equal(Object.hasOwn(firstPublish, 'candidateEvaluations'), false)
+        assert.equal(Object.hasOwn(firstPublish, 'selectorFrameHashes'), false)
+        assert.equal(Object.hasOwn(firstPublish, 'targetFrameOffsetsMs'), false, 'legacy build14 target offsets must not enter canonical public metadata')
         assertNoHeavyRtpArrays(firstPublish, 'first publish')
 
         const canonical = {
@@ -213,6 +221,19 @@ test('build-27 complete -> immediate build14 publish -> periodic republishes nev
             assert.notEqual(attrs.frameHashes[0], selectorFrame1Hash, `publish ${index + 1}: selector Frame1 hash leaked back`)
             assert.deepEqual(attrs.outputFrameSources, canonical.outputFrameSources)
             assert.deepEqual(attrs.outputFrameSourceIndices, canonical.outputFrameSourceIndices)
+            assert.deepEqual(attrs.frameSourceIndices, [null, 0, 54], `publish ${index + 1}: internal compatibility source index leaked`)
+            assert.deepEqual(attrs.selectionReasons, ['motion_snapshot', 'first_clean_frame', 'early_visual_change_fallback'])
+            assert.equal(attrs.selectionReasons.length, 3)
+            assert.equal(attrs.selectionReasons.includes('compatibility_tail'), false)
+            assert.equal(JSON.stringify(attrs).includes('compatibility_tail'), false, `publish ${index + 1}: compatibility tail leaked into public metadata`)
+            assert.deepEqual(attrs.actualFrameOffsetsMs, [null, 0, 3150], `publish ${index + 1}: internal tail offset leaked`)
+            assert.deepEqual(attrs.framePts, [null, 0, 283500], `publish ${index + 1}: internal tail PTS leaked`)
+            assert.deepEqual(attrs.framePtsTime, [null, 0, 3.15], `publish ${index + 1}: internal tail pts_time leaked`)
+            assert.deepEqual(attrs.frameTypes, [null, 'I', 'P'], `publish ${index + 1}: internal tail frame type leaked`)
+            assert.deepEqual(attrs.frameRawChecksums, [null, 'RAW_A', 'RAW_B'], `publish ${index + 1}: internal tail checksum leaked`)
+            assert.equal(Object.hasOwn(attrs, 'candidateEvaluations'), false)
+            assert.equal(Object.hasOwn(attrs, 'selectorFrameHashes'), false)
+            assert.equal(Object.hasOwn(attrs, 'targetFrameOffsetsMs'), false)
             assert.equal(attrs.snapshotCapturedAt, canonical.snapshotCapturedAt)
             assert.equal(attrs.snapshotSourceTimestamp, canonical.snapshotSourceTimestamp)
         }
