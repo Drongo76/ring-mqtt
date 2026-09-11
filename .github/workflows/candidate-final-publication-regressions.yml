@@ -1,0 +1,96 @@
+name: Candidate final publication regressions
+
+on:
+  push:
+    branches: [ "candidate/build-28-early-f2-f3" ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: candidate/build-28-early-f2-f3
+
+      - name: Add final publication regressions only
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f'expected block not found in {path}: {old[:120]!r}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'lib/build12-patch.js',
+              "                outputFrameSources: ['motion_snapshot', 'adaptive_selected_1', 'adaptive_selected_2'],",
+              "                outputFrameSources: ['motion_snapshot', 'adaptive_selected_2', 'adaptive_selected_3'],"
+          )
+
+          replace_once(
+              'test/ki-burst-build25.test.js',
+              "import { composeKiBurstFrames } from '../lib/ki-burst-output.js'",
+              "import { composeKiBurstFrames, kiBurstFrameHash } from '../lib/ki-burst-output.js'"
+          )
+
+          replace_once(
+              'test/ki-burst-build25.test.js',
+              "        frameHashes: ['HASH_A', 'HASH_B', 'HASH_C'],\n        selectionMode: 'adaptive_buffered',",
+              "        frameHashes: [Buffer.from('HASH_A'), Buffer.from('HASH_B'), Buffer.from('HASH_C')].map(kiBurstFrameHash),\n        candidateEvaluations: [\n            { index: 0, reason: 'first_clean_frame', selectedImmediately: true },\n            { index: 54, reason: 'buffered_visual_change', selectedImmediately: false },\n            { index: 68, reason: 'buffered_candidate', selectedImmediately: false }\n        ],\n        selectionReasons: ['first_clean_frame', 'early_visual_change_primary', 'compatibility_tail'],\n        selectionMode: 'adaptive_buffered',"
+          )
+
+          replace_once(
+              'test/ki-burst-build25.test.js',
+              "        assert.equal((await readFile(paths[0])).toString(), 'HASH_S')\n        assert.equal((await readFile(paths[1])).toString(), 'HASH_A')\n        assert.equal((await readFile(paths[2])).toString(), 'HASH_B')",
+              "        const finalFrame1 = await readFile(paths[0])\n        const finalFrame2 = await readFile(paths[1])\n        const finalFrame3 = await readFile(paths[2])\n        assert.equal(finalFrame1.toString(), 'HASH_S')\n        assert.equal(finalFrame2.toString(), 'HASH_A')\n        assert.equal(finalFrame3.toString(), 'HASH_B')\n        assert.equal(kiBurstFrameHash(finalFrame2), kiBurstFrameHash(Buffer.from('HASH_A')), 'final frame-2 JPEG hash must equal selector selected[0] JPEG hash')\n        assert.equal(kiBurstFrameHash(finalFrame3), kiBurstFrameHash(Buffer.from('HASH_B')), 'final frame-3 JPEG hash must equal selector selected[1] JPEG hash')"
+          )
+
+          replace_once(
+              'test/ki-burst-build25.test.js',
+              "        assert.deepEqual(attrs.outputFrameSourceIndices, [null, 0, 54])\n        assert.deepEqual(attrs.outputFrameSources, ['motion_snapshot', 'adaptive_selected_1', 'adaptive_selected_2'])\n        assert.deepEqual(attrs.selectorFrameHashes, ['HASH_A', 'HASH_B', 'HASH_C'])\n        assert.equal(attrs.frameHashes[0] === 'HASH_A', false, 'published Frame1 hash must describe the Snapshot')",
+              "        assert.deepEqual(attrs.outputFrameSourceIndices, [null, 0, 54])\n        assert.deepEqual(attrs.outputFrameSources, ['motion_snapshot', 'adaptive_selected_2', 'adaptive_selected_3'])\n        assert.equal(attrs.frameHashes[1], attrs.selectorFrameHashes[0], 'published Frame2 hash must map to selector selected[0]')\n        assert.equal(attrs.frameHashes[2], attrs.selectorFrameHashes[1], 'published Frame3 hash must map to selector selected[1]')\n        assert.equal(attrs.frameHashes[1], kiBurstFrameHash(finalFrame2), 'published Frame2 hash must match final frame-2 JPEG bytes')\n        assert.equal(attrs.frameHashes[2], kiBurstFrameHash(finalFrame3), 'published Frame3 hash must match final frame-3 JPEG bytes')\n        assert.equal(Object.hasOwn(attrs, 'candidateEvaluations'), false, 'candidateEvaluations must remain internal and must not publish stale final-frame naming')\n        assert.deepEqual(attrs.selectionReasons, ['first_clean_frame', 'early_visual_change_primary', 'compatibility_tail'])\n        assert.equal(attrs.selectionReasons.some(reason => /^adaptive_selected_[12]$/.test(reason)), false, 'published selection metadata must not call old selector positions final F2/F3')\n        assert.equal(attrs.frameHashes[0] === attrs.selectorFrameHashes[0], false, 'published Frame1 hash must describe the Motion Snapshot, not selector selected[0]')"
+          )
+
+          replace_once(
+              'test/ki-burst-build26.test.js',
+              "            'motion_snapshot',\n            'adaptive_selected_1',\n            'adaptive_selected_2'",
+              "            'motion_snapshot',\n            'adaptive_selected_2',\n            'adaptive_selected_3'"
+          )
+
+          replace_once(
+              'test/ki-burst-build27.test.js',
+              "        const snapshotFrame1Hash = firstPublish.frameHashes[0]\n        assert.notEqual(snapshotFrame1Hash, selectorFrame1Hash, 'Frame1 public hash must describe Motion Snapshot')",
+              "        const snapshotFrame1Hash = firstPublish.frameHashes[0]\n        assert.notEqual(snapshotFrame1Hash, selectorFrame1Hash, 'Frame1 public hash must describe Motion Snapshot')\n        assert.deepEqual(firstPublish.outputFrameSourceIndices, [null, 0, 54], 'final published source indices must map Snapshot, selected[0], selected[1]')\n        assert.deepEqual(firstPublish.outputFrameSources, ['motion_snapshot', 'adaptive_selected_2', 'adaptive_selected_3'])"
+          )
+          PY
+
+      - name: Commit regression-only changes if needed
+        shell: bash
+        run: |
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add lib/build12-patch.js test/ki-burst-build25.test.js test/ki-burst-build26.test.js test/ki-burst-build27.test.js
+            git commit -m "candidate: lock final published Burst frame mapping"
+            git push origin HEAD:candidate/build-28-early-f2-f3
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run full test suite
+        run: npm test
