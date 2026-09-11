@@ -217,8 +217,8 @@ test('build-26 complete plus three periodic republishes stay compact and never r
         assertCompactPublicRtpIntegrity(camera.data.ki_burst.attributes.rtpIntegrity)
         assert.deepEqual(camera.data.ki_burst.attributes.outputFrameSources, [
             'motion_snapshot',
-            'adaptive_selected_1',
-            'adaptive_selected_2'
+            'adaptive_selected_2',
+            'adaptive_selected_3'
         ])
 
         for (let iteration = 0; iteration < 3; iteration++) {

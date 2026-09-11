@@ -184,6 +184,8 @@ test('build-27 complete -> immediate build14 publish -> periodic republishes nev
         const firstPublish = JSON.parse(camera.publishes.filter(entry => entry.topic === 'status/attr').at(-1).payload)
         const snapshotFrame1Hash = firstPublish.frameHashes[0]
         assert.notEqual(snapshotFrame1Hash, selectorFrame1Hash, 'Frame1 public hash must describe Motion Snapshot')
+        assert.deepEqual(firstPublish.outputFrameSourceIndices, [null, 0, 54], 'final published source indices must map Snapshot, selected[0], selected[1]')
+        assert.deepEqual(firstPublish.outputFrameSources, ['motion_snapshot', 'adaptive_selected_2', 'adaptive_selected_3'])
         assertNoHeavyRtpArrays(firstPublish, 'first publish')
 
         const canonical = {

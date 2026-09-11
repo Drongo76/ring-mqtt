@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { composeKiBurstFrames } from '../lib/ki-burst-output.js'
+import { composeKiBurstFrames, kiBurstFrameHash } from '../lib/ki-burst-output.js'
 import { publishBurstState } from '../lib/build12-patch.js'
 import {
     KiBurstController,
@@ -62,7 +62,13 @@ function completionDetails(paths) {
         paths,
         frameCount: 3,
         frameSourceIndices: [0, 54, 68],
-        frameHashes: ['HASH_A', 'HASH_B', 'HASH_C'],
+        frameHashes: [Buffer.from('HASH_A'), Buffer.from('HASH_B'), Buffer.from('HASH_C')].map(kiBurstFrameHash),
+        candidateEvaluations: [
+            { index: 0, reason: 'first_clean_frame', selectedImmediately: true },
+            { index: 54, reason: 'buffered_visual_change', selectedImmediately: false },
+            { index: 68, reason: 'buffered_candidate', selectedImmediately: false }
+        ],
+        selectionReasons: ['first_clean_frame', 'early_visual_change_primary', 'compatibility_tail'],
         selectionMode: 'adaptive_buffered',
         observationWindowMs: 6000,
         minimumSelectionSeparationMs: 1000
@@ -105,9 +111,14 @@ test('final publication keeps Motion Snapshot as F1 and publishes selected[0]/se
         assert.equal(camera.data.snapshot.cache, ordinarySnapshotBefore)
         assert.equal(camera.data.snapshot.cache.toString(), 'HASH_S')
         assert.deepEqual(camera.data.ki_burst.frames.map(frame => frame.toString()), ['HASH_S', 'HASH_A', 'HASH_B'])
-        assert.equal((await readFile(paths[0])).toString(), 'HASH_S')
-        assert.equal((await readFile(paths[1])).toString(), 'HASH_A')
-        assert.equal((await readFile(paths[2])).toString(), 'HASH_B')
+        const finalFrame1 = await readFile(paths[0])
+        const finalFrame2 = await readFile(paths[1])
+        const finalFrame3 = await readFile(paths[2])
+        assert.equal(finalFrame1.toString(), 'HASH_S')
+        assert.equal(finalFrame2.toString(), 'HASH_A')
+        assert.equal(finalFrame3.toString(), 'HASH_B')
+        assert.equal(kiBurstFrameHash(finalFrame2), kiBurstFrameHash(Buffer.from('HASH_A')), 'final frame-2 JPEG hash must equal selector selected[0] JPEG hash')
+        assert.equal(kiBurstFrameHash(finalFrame3), kiBurstFrameHash(Buffer.from('HASH_B')), 'final frame-3 JPEG hash must equal selector selected[1] JPEG hash')
 
         assert.equal(camera.publishes.find(entry => entry.topic === 'frame/1').payload.toString(), 'HASH_S')
         assert.equal(camera.publishes.find(entry => entry.topic === 'frame/2').payload.toString(), 'HASH_A')
@@ -117,9 +128,15 @@ test('final publication keeps Motion Snapshot as F1 and publishes selected[0]/se
         const attrs = JSON.parse(camera.publishes.find(entry => entry.topic === 'status/attr').payload)
         assert.deepEqual(attrs.frameSourceIndices, [0, 54, 68], 'selector diagnostics remain available internally')
         assert.deepEqual(attrs.outputFrameSourceIndices, [null, 0, 54])
-        assert.deepEqual(attrs.outputFrameSources, ['motion_snapshot', 'adaptive_selected_1', 'adaptive_selected_2'])
-        assert.deepEqual(attrs.selectorFrameHashes, ['HASH_A', 'HASH_B', 'HASH_C'])
-        assert.equal(attrs.frameHashes[0] === 'HASH_A', false, 'published Frame1 hash must describe the Snapshot')
+        assert.deepEqual(attrs.outputFrameSources, ['motion_snapshot', 'adaptive_selected_2', 'adaptive_selected_3'])
+        assert.equal(attrs.frameHashes[1], attrs.selectorFrameHashes[0], 'published Frame2 hash must map to selector selected[0]')
+        assert.equal(attrs.frameHashes[2], attrs.selectorFrameHashes[1], 'published Frame3 hash must map to selector selected[1]')
+        assert.equal(attrs.frameHashes[1], kiBurstFrameHash(finalFrame2), 'published Frame2 hash must match final frame-2 JPEG bytes')
+        assert.equal(attrs.frameHashes[2], kiBurstFrameHash(finalFrame3), 'published Frame3 hash must match final frame-3 JPEG bytes')
+        assert.equal(Object.hasOwn(attrs, 'candidateEvaluations'), false, 'candidateEvaluations must remain internal and must not publish stale final-frame naming')
+        assert.deepEqual(attrs.selectionReasons, ['first_clean_frame', 'early_visual_change_primary', 'compatibility_tail'])
+        assert.equal(attrs.selectionReasons.some(reason => /^adaptive_selected_[12]$/.test(reason)), false, 'published selection metadata must not call old selector positions final F2/F3')
+        assert.equal(attrs.frameHashes[0] === attrs.selectorFrameHashes[0], false, 'published Frame1 hash must describe the Motion Snapshot, not selector selected[0]')
     } finally {
         await rm(dir, { recursive: true, force: true })
     }
