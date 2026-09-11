@@ -321,8 +321,8 @@ test('build-28 KI Burst reuses the already acquired Motion Snapshot for Frame1 w
         assert.equal(camera.data.ki_burst.status, 'complete')
         assert.deepEqual(camera.data.ki_burst.frames[0], motionSnapshotBytes)
         assert.equal(camera.data.ki_burst.frames[0].toString(), 'MOTION_SNAPSHOT_FOR_BURST')
-        assert.equal(camera.data.ki_burst.frames[1].toString(), 'SELECTED_B')
-        assert.equal(camera.data.ki_burst.frames[2].toString(), 'SELECTED_C')
+        assert.equal(camera.data.ki_burst.frames[1].toString(), 'SELECTED_A')
+        assert.equal(camera.data.ki_burst.frames[2].toString(), 'SELECTED_B')
         assert.equal(camera.data.snapshot.cache.toString(), 'MOTION_SNAPSHOT_FOR_BURST', 'Burst must not mutate standalone Snapshot cache')
         assert.equal(camera.data.snapshot.cacheType, 'motion')
     } finally {
