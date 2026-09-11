@@ -69,7 +69,7 @@ function completionDetails(paths) {
     }
 }
 
-test('build-25 composes Frame1 from the existing Motion Snapshot while preserving build-24 Frame2 and Frame3', () => {
+test('final composition is Motion Snapshot -> first clean WebRTC -> early adaptive WebRTC', () => {
     const snapshot = Buffer.from('HASH_S')
     const selected = [Buffer.from('HASH_A'), Buffer.from('HASH_B'), Buffer.from('HASH_C')]
     const result = composeKiBurstFrames({
@@ -82,14 +82,14 @@ test('build-25 composes Frame1 from the existing Motion Snapshot while preservin
     })
 
     assert.equal(result.frames[0].toString(), 'HASH_S')
-    assert.equal(result.frames[1].toString(), 'HASH_B')
-    assert.equal(result.frames[2].toString(), 'HASH_C')
+    assert.equal(result.frames[1].toString(), 'HASH_A')
+    assert.equal(result.frames[2].toString(), 'HASH_B')
     assert.notEqual(result.frames[0], snapshot, 'Frame1 must be a copy, not the ordinary snapshot Buffer itself')
     assert.equal(snapshot.toString(), 'HASH_S', 'ordinary Motion Snapshot must remain unchanged')
-    assert.equal(result.frames.some(frame => frame.toString() === 'HASH_A'), false, 'build-24 selected[0] must not be published as Frame1')
+    assert.equal(result.frames.some(frame => frame.toString() === 'HASH_C'), false, 'compatibility tail must not be published')
 })
 
-test('final publication duplicates the Motion Snapshot into Frame1 without any additional Ring snapshot request', async () => {
+test('final publication keeps Motion Snapshot as F1 and publishes selected[0]/selected[1] as F2/F3 without another Ring request', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ki-burst-build25-'))
     try {
         const paths = [join(dir, 'frame-1.jpg'), join(dir, 'frame-2.jpg'), join(dir, 'frame-3.jpg')]
@@ -104,22 +104,22 @@ test('final publication duplicates the Motion Snapshot into Frame1 without any a
         assert.equal(camera.snapshotRequests, 0)
         assert.equal(camera.data.snapshot.cache, ordinarySnapshotBefore)
         assert.equal(camera.data.snapshot.cache.toString(), 'HASH_S')
-        assert.deepEqual(camera.data.ki_burst.frames.map(frame => frame.toString()), ['HASH_S', 'HASH_B', 'HASH_C'])
+        assert.deepEqual(camera.data.ki_burst.frames.map(frame => frame.toString()), ['HASH_S', 'HASH_A', 'HASH_B'])
         assert.equal((await readFile(paths[0])).toString(), 'HASH_S')
-        assert.equal((await readFile(paths[1])).toString(), 'HASH_B')
-        assert.equal((await readFile(paths[2])).toString(), 'HASH_C')
+        assert.equal((await readFile(paths[1])).toString(), 'HASH_A')
+        assert.equal((await readFile(paths[2])).toString(), 'HASH_B')
 
         assert.equal(camera.publishes.find(entry => entry.topic === 'frame/1').payload.toString(), 'HASH_S')
-        assert.equal(camera.publishes.find(entry => entry.topic === 'frame/2').payload.toString(), 'HASH_B')
-        assert.equal(camera.publishes.find(entry => entry.topic === 'frame/3').payload.toString(), 'HASH_C')
+        assert.equal(camera.publishes.find(entry => entry.topic === 'frame/2').payload.toString(), 'HASH_A')
+        assert.equal(camera.publishes.find(entry => entry.topic === 'frame/3').payload.toString(), 'HASH_B')
         assert.equal(camera.publishes.find(entry => entry.topic === 'status').payload, 'complete')
 
         const attrs = JSON.parse(camera.publishes.find(entry => entry.topic === 'status/attr').payload)
-        assert.deepEqual(attrs.frameSourceIndices, [0, 54, 68], 'selector diagnostics must remain build-24 selection')
-        assert.deepEqual(attrs.outputFrameSourceIndices, [null, 54, 68])
-        assert.deepEqual(attrs.outputFrameSources, ['motion_snapshot', 'adaptive_selected_2', 'adaptive_selected_3'])
+        assert.deepEqual(attrs.frameSourceIndices, [0, 54, 68], 'selector diagnostics remain available internally')
+        assert.deepEqual(attrs.outputFrameSourceIndices, [null, 0, 54])
+        assert.deepEqual(attrs.outputFrameSources, ['motion_snapshot', 'adaptive_selected_1', 'adaptive_selected_2'])
         assert.deepEqual(attrs.selectorFrameHashes, ['HASH_A', 'HASH_B', 'HASH_C'])
-        assert.equal(attrs.frameHashes[0] === 'HASH_A', false, 'published Frame1 hash must describe the Snapshot, not selected[0]')
+        assert.equal(attrs.frameHashes[0] === 'HASH_A', false, 'published Frame1 hash must describe the Snapshot')
     } finally {
         await rm(dir, { recursive: true, force: true })
     }
@@ -145,7 +145,7 @@ test('a newer Motion cannot leak its Snapshot into an older running Burst', asyn
     }
 })
 
-test('status complete is rejected when any of the three final output image files is missing', async () => {
+test('status complete is rejected when any of the three worker output image files is missing before final composition', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ki-burst-build25-missing-output-'))
     try {
         const paths = [join(dir, 'frame-1.jpg'), join(dir, 'frame-2.jpg'), join(dir, 'frame-3.jpg')]
