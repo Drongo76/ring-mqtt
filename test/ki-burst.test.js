@@ -130,16 +130,20 @@ test('KI Burst opens one dedicated session with buffered observation and complet
     assert.equal(fixture.sent.some(message => message.command === 'start'), false)
 })
 
-test('build-25 safety budgets preserve the full observation window after slow WebRTC startup', () => {
+test('KI Burst safety budgets preserve the full observation window even after a late first clean frame', () => {
     assert.equal(KI_BURST_OBSERVATION_WINDOW_MS, 6000)
     assert.equal(KI_BURST_INTERVAL_MS, 1000)
     assert.equal(KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS, 25000)
     assert.equal(DEFAULT_KI_BURST_HARD_SAFETY_TIMEOUT_MS, 25000)
     assert.equal(KI_BURST_CONTROLLER_FINALIZATION_GRACE_MS, 5000)
-    assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, 30000)
-    assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS + KI_BURST_CONTROLLER_FINALIZATION_GRACE_MS)
+    assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, 36000)
+    assert.equal(
+        KI_BURST_CONTROLLER_TIMEOUT_MS,
+        KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS + KI_BURST_OBSERVATION_WINDOW_MS + KI_BURST_CONTROLLER_FINALIZATION_GRACE_MS
+    )
     assert.equal(getObservationStopDelayMs(6000, 25000, 12500), 6000)
-    assert.ok(KI_BURST_CONTROLLER_TIMEOUT_MS > 13000)
+    assert.equal(getObservationStopDelayMs(6000, 25000, 24500), 6000)
+    assert.ok(KI_BURST_CONTROLLER_TIMEOUT_MS > 30000)
 })
 
 test('KI Burst timeout stops the worker and cannot be resurrected by a late completion callback', async () => {
@@ -151,6 +155,38 @@ test('KI Burst timeout stops the worker and cannot be resurrected by a late comp
     assert.deepEqual(fixture.sent.map(message => message.command), ['stop', 'burst', 'stop'])
     const lateHandled = fixture.controller.handleWorkerMessage({ type: 'burst_complete', burstId, frames: [Buffer.from('a'), Buffer.from('b'), Buffer.from('c')] })
     assert.equal(lateHandled, false)
+})
+
+test('failed Burst preserves forensic candidate, stop and RTP diagnostics', async () => {
+    const fixture = makeController()
+    const burstId = await fixture.controller.start()
+    const diagnostics = {
+        candidateFramesEvaluated: 4,
+        candidateEvaluations: [
+            { index: 0, elapsedMs: 0, reason: 'first_clean_frame' },
+            { index: 1, elapsedMs: 950, reason: 'buffered_candidate' }
+        ],
+        stopReason: 'hard-safety-timeout',
+        rtpIntegrity: {
+            acceptedAccessUnits: 7,
+            droppedAccessUnits: 2,
+            resyncs: 1
+        }
+    }
+
+    const handled = fixture.controller.handleWorkerMessage({
+        type: 'burst_failed',
+        burstId,
+        error: 'Adaptive KI Burst could not find an early candidate',
+        diagnostics
+    })
+
+    assert.equal(handled, true)
+    assert.equal(fixture.controller.running, false)
+    const details = fixture.states.at(-1).details
+    assert.equal(details.stopReason, 'hard-safety-timeout')
+    assert.deepEqual(details.candidateEvaluations, diagnostics.candidateEvaluations)
+    assert.deepEqual(details.rtpIntegrity, diagnostics.rtpIntegrity)
 })
 
 test('KI Burst rejects incomplete worker output instead of publishing a partial burst', async () => {
