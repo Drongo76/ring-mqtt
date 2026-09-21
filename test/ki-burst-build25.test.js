@@ -236,8 +236,8 @@ test('controller watchdog no longer wins the old 13 second finalization race', a
 
     const burstId = await controller.start()
     assert.equal(KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS, 25000)
-    assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, 30000)
-    assert.equal(timeoutDelay, 30000)
+    assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, 36000)
+    assert.equal(timeoutDelay, 36000)
     assert.ok(timeoutDelay > 13000)
 
     controller.handleWorkerMessage({
