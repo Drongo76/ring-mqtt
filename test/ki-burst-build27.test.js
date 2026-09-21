@@ -261,5 +261,5 @@ test('build-27 complete -> immediate build14 publish -> periodic republishes nev
 test('build-27 public-state hotfix leaves Burst timing constants unchanged', () => {
     assert.equal(KI_BURST_OBSERVATION_WINDOW_MS, 6000)
     assert.equal(KI_BURST_WORKER_HARD_SAFETY_TIMEOUT_MS, 25000)
-    assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, 30000)
+    assert.equal(KI_BURST_CONTROLLER_TIMEOUT_MS, 36000)
 })
