@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { composeKiBurstFrames, kiBurstFrameHash } from '../lib/ki-burst-output.js'
-import { publishBurstState } from '../lib/build12-patch.js'
+import { publishBurstState } from '../lib/ki-burst-publisher.js'
 import {
     KiBurstController,
     KI_BURST_CONTROLLER_TIMEOUT_MS,
