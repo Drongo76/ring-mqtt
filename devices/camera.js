@@ -1,8 +1,8 @@
 import RingPolledDevice from './base-polled-device.js'
 import utils from '../lib/utils.js'
 import pathToFfmpeg from 'ffmpeg-for-homebridge'
-import LiveStreamControl from '../lib/live-stream-control.js'
-import KiBurstFeature from '../lib/ki-burst-feature.js'
+import { Worker } from 'worker_threads'
+import { spawn } from 'child_process'
 import { parseISO, addSeconds } from 'date-fns';
 import chalk from 'chalk'
 
@@ -77,7 +77,12 @@ export default class Camera extends RingPolledDevice {
                     publishedStatus: '',
                     pendingOnDemandUrl: null,
                     pendingOnDemandAt: 0,
-                    worker: null
+                    worker: new Worker('./devices/camera-livestream.js', {
+                        workerData: {
+                            doorbotId: this.device.id,
+                            deviceName: this.deviceData.name
+                        }
+                    })
                 },
                 event: {
                     state: 'OFF',
@@ -277,16 +282,34 @@ export default class Camera extends RingPolledDevice {
             }
         }
 
-        // Live streaming and KI Burst share one WebRTC worker. KI Burst claims its own messages first.
-        this.liveControl = new LiveStreamControl(this, {
-            ffmpegPath: pathToFfmpeg,
-            getConfig: () => utils.config(),
-            interceptWorkerMessage: message => this.kiBurst.handleWorkerMessage(message),
-            isBurstRunning: () => this.kiBurst.running,
-            onWorkerCrash: () => this.kiBurst.handleWorkerCrash()
+        this.data.stream.live.worker.on('message', (message) => {
+            if (message.type === 'state') {
+                switch (message.data) {
+                    case 'active':
+                        this.data.stream.live.status = 'active'
+                        this.data.stream.live.session = true
+                        break;
+                    case 'inactive':
+                        this.data.stream.live.status = 'inactive'
+                        this.data.stream.live.session = false
+                        break;
+                    case 'failed':
+                        this.data.stream.live.status = 'failed'
+                        this.data.stream.live.session = false
+                        break;
+                }
+                this.publishStreamState()
+            } else {
+                switch (message.type) {
+                    case 'log_info':
+                        this.debug(message.data, 'wrtc')
+                        break;
+                    case 'log_error':
+                        this.debug(chalk.redBright(message.data), 'wrtc')
+                        break;
+                }
+            }
         })
-        this.kiBurst = new KiBurstFeature(this, { liveControl: this.liveControl })
-        this.kiBurst.attachWorker(this.liveControl.attachWorker())
 
         this.device.onNewNotification.subscribe(notification => {
             this.processNotification(notification)
@@ -315,7 +338,6 @@ export default class Camera extends RingPolledDevice {
             live_allow: {
                 state: this.data.live_allow.state
             },
-            ki_burst_warm: this.kiBurst.persistedState(),
             auto_off: {
                 enabled: this.data.auto_off.enabled,
                 minutes: this.data.auto_off.minutes
@@ -415,10 +437,12 @@ export default class Camera extends RingPolledDevice {
             }
         }
 
+        let stillImageUrlBase = 'localhost'
         let streamSourceUrlBase
         if (process.env.RUNMODE === 'addon') {
             // For the addon we get some values populated from the startup script
             // that queries the HA API via bashio
+            stillImageUrlBase = process.env.HAHOSTNAME
             streamSourceUrlBase = process.env.ADDONHOSTNAME
         } else if (process.env.RUNMODE === 'docker') {
             // For docker we don't have any API to query so we just use the IP of the docker container
@@ -430,6 +454,7 @@ export default class Camera extends RingPolledDevice {
         }
 
         // Set some helper attributes for streaming
+        this.data.stream.live.stillImageURL = `https://${stillImageUrlBase}:8123{{ states.camera.${this.device.name.toLowerCase().replace(" ","_")}_snapshot.attributes.entity_picture }}`,
         this.data.stream.live.streamSource = (utils.config().livestream_user && utils.config().livestream_pass)
             ? `rtsp://${utils.config().livestream_user}:${utils.config().livestream_pass}@${streamSourceUrlBase}:8554/${this.deviceId}_live`
             : `rtsp://${streamSourceUrlBase}:8554/${this.deviceId}_live`
@@ -492,7 +517,6 @@ export default class Camera extends RingPolledDevice {
                 this.publishSnapshotInterval(isPublish)
             }
             this.publishAttributes()
-            this.kiBurst.republish()
         }
 
         // Check for subscription to ding and motion events and attempt to resubscribe
@@ -643,7 +667,8 @@ export default class Camera extends RingPolledDevice {
     // Publish device data to info topic
     async publishAttributes() {
         const attributes = {
-            stream_Source: this.data.stream.live.streamSource
+            stream_Source: this.data.stream.live.streamSource,
+            still_Image_URL: this.data.stream.live.stillImageURL
         }
         const deviceHealth = await this.device.getHealth()
 
@@ -907,8 +932,38 @@ publishEventSelectState(isPublish) {
         return false
     }
 
-    startLiveStream(rtspPublishUrl) {
-        return this.liveControl.startLiveStream(rtspPublishUrl)
+    async startLiveStream(rtspPublishUrl) {
+        this.data.stream.live.session = true
+
+        const streamData = {
+            rtspPublishUrl,
+            ticket: null
+        }
+
+        try {
+            this.debug('Acquiring a live stream WebRTC signaling session ticket')
+            const response = await this.device.restClient.request({
+                method: 'POST',
+                url: 'https://app.ring.com/api/v1/clap/ticket/request/signalsocket'
+            })
+            streamData.ticket = response.ticket
+        } catch(error) {
+            if (error?.response?.statusCode === 403) {
+                this.debug(`Camera returned 403 when starting a live stream.  This usually indicates that live streaming is blocked by Modes settings.  Check your Ring app and verify that you are able to stream from this camera with the current Modes settings.`)
+            } else {
+                this.debug(error)
+            }
+        }
+
+        if (streamData.ticket) {
+            this.debug('Live stream WebRTC signaling session ticket acquired, starting live stream worker')
+            this.data.stream.live.worker.postMessage({ command: 'start', streamData })
+        } else {
+            this.debug('Live stream failed to initialize WebRTC signaling session')
+            this.data.stream.live.status = 'failed'
+            this.data.stream.live.session = false
+            this.publishStreamState()
+        }
     }
 
     async startEventStream(rtspPublishUrl) {
@@ -986,8 +1041,49 @@ publishEventSelectState(isPublish) {
         }
     }
 
-    startKeepaliveStream() {
-        return this.liveControl.startKeepaliveStream()
+    async startKeepaliveStream() {
+        const duration = 86400
+        if (this.data.stream.keepalive.active) { return }
+        this.data.stream.keepalive.active = true
+
+        const rtspPublishUrl = (utils.config().livestream_user && utils.config().livestream_pass)
+            ? `rtsp://${utils.config().livestream_user}:${utils.config().livestream_pass}@localhost:8554/${this.deviceId}_live`
+            : `rtsp://localhost:8554/${this.deviceId}_live`
+
+        this.debug(`Starting a keepalive stream for camera`)
+
+        // Keepalive stream is used only when the live stream is started
+        // manually. It copies only the audio stream to null output just to
+        // trigger rtsp server to start the on-demand stream and keep it running
+        // when there are no other RTSP readers.
+        this.data.stream.keepalive.session = spawn(pathToFfmpeg, [
+            '-i', rtspPublishUrl,
+            '-map', '0:a:0',
+            '-c:a', 'copy',
+            '-f', 'null',
+            '/dev/null'
+        ])
+
+        this.data.stream.keepalive.session.on('spawn', async () => {
+            this.debug(`The keepalive stream has started`)
+        })
+
+        this.data.stream.keepalive.session.on('close', async () => {
+            this.data.stream.keepalive.active = false
+            this.data.stream.keepalive.session = false
+            this.debug(`The keepalive stream has stopped`)
+        })
+
+        // The keepalive stream will time out after 24 hours
+        this.data.stream.keepalive.expires = Math.floor(Date.now()/1000) + duration
+        while (this.data.stream.keepalive.active && Math.floor(Date.now()/1000) < this.data.stream.keepalive.expires) {
+            await utils.sleep(60)
+        }
+        if (this.data.stream.keepalive.session && typeof this.data.stream.keepalive.session.kill === 'function') {
+            this.data.stream.keepalive.session.kill()
+        }
+        this.data.stream.keepalive.active = false
+        this.data.stream.keepalive.session = false
     }
 
     async updateEventStreamUrl() {
@@ -1170,12 +1266,6 @@ publishEventSelectState(isPublish) {
             case 'live_allow/command':
                 this.setLiveAllowState(message)
                 break;
-            case 'ki_burst/command':
-                this.kiBurst.handleCommand(message)
-                break;
-            case 'ki_burst_warm/command':
-                this.kiBurst.handleWarmCommand(message)
-                break;
             case 'auto_off_enabled/command':
                 this.setAutoOffEnabled(message)
                 break;
@@ -1340,7 +1430,7 @@ publishEventSelectState(isPublish) {
         this.debug(`Received set snapshot mode to ${message}`)
         const snapshotMode = message.toLowerCase().replace(/(^\w{1})|(\s+\w{1})/g, letter => letter.toUpperCase())
 
-        if (this.entity.snapshot_mode.options.includes(snapshotMode)) {
+        if (this.entity.snapshot_mode.options.map(o => o.includes(snapshotMode))) {
             this.data.snapshot.mode = snapshotMode
             this.data.snapshot.autoInterval = snapshotMode === 'Auto' ? true : this.data.snapshot.autoInterval
             this.updateSnapshotMode()
@@ -1362,12 +1452,178 @@ publishEventSelectState(isPublish) {
 }
 
     setLiveStreamState(message) {
-        this.liveControl.setLiveStreamState(message)
+        const command = message.toLowerCase()
+        this.debug('Received set live stream state ' + message)
+
+        if (command.startsWith('on-demand')) {
+            // ON-DEMAND wird NUR akzeptiert, wenn Live Allow = ON (Kill-Switch nicht aktiv)
+            const liveAllowed = !this.data.live_allow || this.data.live_allow.state === 'ON'
+
+            if (!liveAllowed &&
+                this.data.stream.live.status !== 'active' &&
+                this.data.stream.live.status !== 'activating') {
+                this.debug('Blocking ON-DEMAND: Live Allow OFF -> kein Live-Stream-Start')
+                // Merke die aktuelle ON-DEMAND Anfrage (RTSP Publish URL), damit wir bei Live Allow ON
+                // sofort starten koennen, ohne auf go2rtc-Timeout/Retry warten zu muessen.
+                this.data.stream.live.pendingOnDemandUrl = message.split(' ')[1] || null
+                this.data.stream.live.pendingOnDemandAt = Date.now()
+                this.data.stream.live.status = 'inactive'
+                this.publishStreamState(true, 'live')
+                this.rescheduleAutoOff()
+                return
+            }
+
+            const liveIsReallyRunning = (this.data.stream.live.session === true) &&
+                (this.data.stream.live.status === 'active' || this.data.stream.live.status === 'activating')
+
+            if (liveIsReallyRunning) {
+                this.publishStreamState()
+                this.rescheduleAutoOff()
+            } else {
+                this.data.stream.live.status = 'activating'
+                this.publishStreamState()
+                this.rescheduleAutoOff()
+                this.startLiveStream(message.split(' ')[1]) // Portion after space is the RTSP publish URL
+            }
+        } else {
+            switch (command) {
+                case 'on':
+                    // In diesem Fork ist der "Live Stream"-Schalter nur eine STATUS-Anzeige.
+                    // Start/Stop wird ausschliesslich ueber "Live Allow" gesteuert.
+                    this.debug('Ignoring manual live stream ON command (Status-Schalter, bitte Live Allow verwenden)')
+                    break;
+
+                case 'off':
+                    // Manueller OFF: Flag zurücksetzen und alle Sessions stoppen
+                    if (this.data.stream && this.data.stream.live) {
+                        this.data.stream.live.manual = false
+                    }
+
+                    if (this.data.stream.keepalive.session && typeof this.data.stream.keepalive.session.kill === 'function') {
+                        this.debug('Stopping the keepalive stream')
+                        this.data.stream.keepalive.session.kill()
+                        this.data.stream.keepalive.session = null
+                    } else if (this.data.stream.keepalive.session && typeof this.data.stream.keepalive.session.kill !== 'function') {
+                        this.debug('Keepalive session hat keine kill()-Methode, setze sie zurueck')
+                        this.data.stream.keepalive.session = null
+                    } else if (this.data.stream.live.session) {
+                        this.data.stream.live.worker.postMessage({ command: 'stop' })
+                    } else {
+                        this.data.stream.live.status = 'inactive'
+                        this.publishStreamState()
+                    }
+                    // Auto-Off Timer abbrechen
+                    if (this.data.auto_off.timer) {
+                        clearTimeout(this.data.auto_off.timer)
+                        this.data.auto_off.timer = null
+                    }
+                    break;
+
+                default:
+                    this.debug(`Received unknown command for live stream`)
+            }
+        }
     }
 
     setLiveAllowState(message) {
-        this.liveControl.setLiveAllowState(message)
+        const command = message.toLowerCase()
+        this.debug('Received set live_allow state ' + message)
+
+        if (command !== 'on' && command !== 'off') return
+
+        const newState = (command === 'on') ? 'ON' : 'OFF'
+        this.data.live_allow.state = newState
+        this.publishLiveAllowState()
+        this.updateDeviceState()
+
+        if (newState === 'ON') {
+            // Live Allow ON = einziger Start-Trigger
+            this.debug('Live Allow ON -> erlaubt ON-DEMAND und triggert Start')
+
+            // manual-Flag setzen, damit ON-DEMAND akzeptiert wird
+            if (this.data.stream?.live) {
+                this.data.stream.live.manual = true
+            }
+
+            // Falls kurz zuvor ein ON-DEMAND Versuch geblockt wurde (Live Allow war OFF),
+            // laeuft go2rtc/start-stream.sh ggf. noch und wartet bis zum Timeout.
+            // Wenn wir jetzt auf ON schalten, starten wir sofort mit der gemerkten Publish-URL.
+            if (this.data.stream?.live?.pendingOnDemandUrl) {
+                const ageMs = Date.now() - (this.data.stream.live.pendingOnDemandAt || 0)
+                if (ageMs >= 0 && ageMs < 55000 &&
+                    this.data.stream.live.status !== 'active' && this.data.stream.live.status !== 'activating') {
+                    const url = this.data.stream.live.pendingOnDemandUrl
+                    this.debug('Live Allow ON -> benutze gemerkte ON-DEMAND Publish-URL, starte sofort: ' + url)
+                    this.data.stream.live.pendingOnDemandUrl = null
+                    this.data.stream.live.pendingOnDemandAt = 0
+                    this.data.stream.live.status = 'activating'
+                    this.publishStreamState()
+                    this.rescheduleAutoOff()
+                    this.startLiveStream(url)
+                } else if (ageMs >= 55000) {
+                    // zu alt -> verwerfen
+                    this.data.stream.live.pendingOnDemandUrl = null
+                    this.data.stream.live.pendingOnDemandAt = 0
+                }
+            }
+
+            // Keepalive starten, falls nichts läuft -> triggert go2rtc ON-DEMAND
+            if (this.data.stream?.keepalive &&
+                !this.data.stream.keepalive.session &&
+                !this.data.stream.keepalive.active) {
+                this.startKeepaliveStream()
+            }
+
+            this.rescheduleAutoOff()
+            this.publishStreamState()
+            return
+        }
+
+        // Live Allow OFF = Kill-Switch: sofort stoppen + blockieren
+        this.debug('Live Allow OFF -> Kill-Switch: Live Stream wird sofort gestoppt')
+
+        if (this.data.stream?.live) {
+            this.data.stream.live.manual = false
+        }
+
+        // pending ON-DEMAND Anfrage verwerfen
+        if (this.data.stream?.live) {
+            this.data.stream.live.pendingOnDemandUrl = null
+            this.data.stream.live.pendingOnDemandAt = 0
+        }
+
+        // Keepalive killen
+        if (this.data.stream?.keepalive?.session) {
+            const s = this.data.stream.keepalive.session
+            if (typeof s.kill === 'function') {
+                this.debug('Stopping the keepalive stream (Kill-Switch)')
+                s.kill()
+            }
+            this.data.stream.keepalive.session = null
+            this.data.stream.keepalive.active = false
+        }
+
+        // Live-Worker stoppen (immer) + Status sofort auf inactive setzen,
+        // damit ON-DEMAND nach einem Kill wieder sauber starten kann.
+        if (this.data.stream?.live) {
+            this.data.stream.live.status = 'inactive'
+            this.data.stream.live.session = false
+            this.data.stream.live.publishedStatus = ''
+            this.publishStreamState(true, 'live')
+        }
+
+        if (this.data.stream?.live?.worker) {
+            this.data.stream.live.worker.postMessage({ command: 'stop' })
+        }
+
+
+// Auto-Off Timer abbrechen
+        if (this.data.auto_off?.timer) {
+            clearTimeout(this.data.auto_off.timer)
+            this.data.auto_off.timer = null
+        }
     }
+
 
     setAutoOffEnabled(message) {
         const cmd = message.toLowerCase()
@@ -1392,7 +1648,20 @@ publishEventSelectState(isPublish) {
     }
 
     rescheduleAutoOff() {
-        this.liveControl.rescheduleAutoOff()
+        if (this.data.auto_off.timer) {
+            clearTimeout(this.data.auto_off.timer)
+            this.data.auto_off.timer = null
+        }
+
+        if (!this.data.auto_off.enabled) return
+        if (this.data.stream.live.status !== 'active' && this.data.stream.live.status !== 'activating') return
+
+        const ms = this.data.auto_off.minutes * 60 * 1000
+        this.debug(`Scheduling auto-off in ${this.data.auto_off.minutes} minutes`)
+        this.data.auto_off.timer = setTimeout(() => {
+            this.debug('Auto-off timer fired -> stopping live stream')
+            this.setLiveStreamState('OFF')
+        }, ms)
     }
 
     setEventStreamState(message) {
