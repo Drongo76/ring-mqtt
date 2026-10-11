@@ -3,6 +3,8 @@ name: Build and Push ring-mqtt HA image
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch: {}
 
 jobs:
@@ -26,6 +28,8 @@ jobs:
 
   build:
     needs: test
+    # Pull requests only run the tests; images are built from main.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
