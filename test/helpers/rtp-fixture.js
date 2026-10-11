@@ -5,7 +5,16 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { H264RtpFrameGate } from '../../lib/streaming/h264-rtp-frame-gate.js'
 
-export const ffmpegPath = execSync('command -v ffmpeg').toString().trim()
+// The ffmpeg that production uses (ffmpeg-for-homebridge) when installed, else the system ffmpeg.
+async function resolveFfmpegPath() {
+    try {
+        return (await import('ffmpeg-for-homebridge')).default
+    } catch {
+        return execSync('command -v ffmpeg').toString().trim()
+    }
+}
+
+export const ffmpegPath = await resolveFfmpegPath()
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 export async function freeUdpPort() {
