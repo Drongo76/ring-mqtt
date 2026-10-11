@@ -39,7 +39,9 @@ jobs:
         id: image
         shell: bash
         run: |
-          echo "tag=ghcr.io/drongo76/ring-mqtt-custom:main-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          # build numbers continue the manual series: workflow run 90 is build-32
+          BUILD_NUMBER=$((GITHUB_RUN_NUMBER - 58))
+          echo "tag=ghcr.io/drongo76/ring-mqtt-custom:build-${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
