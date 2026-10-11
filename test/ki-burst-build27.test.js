@@ -3,7 +3,11 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { publishBurstState, republishBurstState } from '../lib/ki-burst-publisher.js'
+import { publishBurstState } from '../lib/build12-patch.js'
+import {
+    publishBuild14BurstDiagnostics,
+    republishStoredBuild14Diagnostics
+} from '../lib/build14-patch.js'
 import {
     KI_BURST_CONTROLLER_TIMEOUT_MS,
     KI_BURST_OBSERVATION_WINDOW_MS,
@@ -157,7 +161,7 @@ function assertNoHeavyRtpArrays(attributes, label) {
     return bytes
 }
 
-test('complete -> periodic republishes never restore raw RTP or selector Frame1 hash', async () => {
+test('build-27 complete -> immediate build14 publish -> periodic republishes never restore raw RTP or selector Frame1 hash', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ki-burst-build27-lifecycle-'))
     try {
         const paths = [join(dir, 'frame-1.jpg'), join(dir, 'frame-2.jpg'), join(dir, 'frame-3.jpg')]
@@ -187,7 +191,7 @@ test('complete -> periodic republishes never restore raw RTP or selector Frame1 
         assert.equal(firstPublish.selectionReasons.includes('compatibility_tail'), false)
         assert.equal(Object.hasOwn(firstPublish, 'candidateEvaluations'), false)
         assert.equal(Object.hasOwn(firstPublish, 'selectorFrameHashes'), false)
-        assert.equal(Object.hasOwn(firstPublish, 'targetFrameOffsetsMs'), false, 'legacy target offsets must not enter canonical public metadata')
+        assert.equal(Object.hasOwn(firstPublish, 'targetFrameOffsetsMs'), false, 'legacy build14 target offsets must not enter canonical public metadata')
         assertNoHeavyRtpArrays(firstPublish, 'first publish')
 
         const canonical = {
@@ -198,10 +202,12 @@ test('complete -> periodic republishes never restore raw RTP or selector Frame1 
             snapshotSourceTimestamp: firstPublish.snapshotSourceTimestamp
         }
 
-        // Camera polling republishes the stored public state; it must never recompute from worker details.
-        republishBurstState(camera)
-        republishBurstState(camera)
-        republishBurstState(camera)
+        // This is the exact compatibility path that caused the immediate second raw publish in build-26.
+        publishBuild14BurstDiagnostics(camera, details)
+
+        // Subsequent camera polling invokes this stored diagnostics republisher.
+        republishStoredBuild14Diagnostics(camera)
+        republishStoredBuild14Diagnostics(camera)
 
         const attributePublishes = camera.publishes.filter(entry => entry.topic === 'status/attr')
         assert.equal(attributePublishes.length, 4)
@@ -239,11 +245,11 @@ test('complete -> periodic republishes never restore raw RTP or selector Frame1 
         assert.equal(camera.data.ki_burst.attributes.snapshotCapturedAt, canonical.snapshotCapturedAt)
         assert.equal(camera.data.ki_burst.attributes.snapshotSourceTimestamp, canonical.snapshotSourceTimestamp)
 
-        // Full worker diagnostics remain intact and available internally only.
-        assert.equal(camera.data.ki_burst.diagnostics.frameHashes[0], selectorFrame1Hash)
-        assert.equal(camera.data.ki_burst.diagnostics.rtpIntegrity.packetDiagnostics.length, 256)
-        assert.equal(camera.data.ki_burst.diagnostics.rtpIntegrity.auDiagnostics.length, 64)
-        assert.equal(camera.data.ki_burst.diagnostics.rtpIntegrity.pendingAccessUnits.length, 16)
+        // Full build14/runtime diagnostics remain intact and available internally only.
+        assert.equal(camera.data.ki_burst.build14Diagnostics.frameHashes[0], selectorFrame1Hash)
+        assert.equal(camera.data.ki_burst.build14Diagnostics.rtpIntegrity.packetDiagnostics.length, 256)
+        assert.equal(camera.data.ki_burst.build14Diagnostics.rtpIntegrity.auDiagnostics.length, 64)
+        assert.equal(camera.data.ki_burst.build14Diagnostics.rtpIntegrity.pendingAccessUnits.length, 16)
         assert.equal(fullRtpIntegrity.packetDiagnostics.length, 256, 'public sanitizing must not mutate internal diagnostics')
 
         console.log(`build-27 worst-case lifecycle public attributes bytes: ${worstCaseBytes}`)

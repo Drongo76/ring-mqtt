@@ -6,7 +6,7 @@ import { join } from 'path'
 import {
     compactRtpIntegrityForHomeAssistant,
     publishBurstState
-} from '../lib/ki-burst-publisher.js'
+} from '../lib/build12-patch.js'
 import {
     KI_BURST_CONTROLLER_TIMEOUT_MS,
     KI_BURST_OBSERVATION_WINDOW_MS,
