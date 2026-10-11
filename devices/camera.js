@@ -5,6 +5,7 @@ import { Worker } from 'worker_threads'
 import { spawn } from 'child_process'
 import { parseISO, addSeconds } from 'date-fns';
 import chalk from 'chalk'
+import { describePushTiming, formatPushTiming, describeDetectionSettings } from '../lib/ring-push-timing.js'
 
 const snapshotRetryAttempts = 3
 const snapshotRetryDelaySeconds = 1
@@ -319,6 +320,8 @@ export default class Camera extends RingPolledDevice {
         // newer motion/ding snapshot when Ring responds out of order.
         this.snapshotRefreshGeneration = 0
 
+        this.debug(`Detection settings reported by Ring: ${JSON.stringify(describeDetectionSettings(this.device.data))}`)
+
         this.updateSnapshotMode()
         this.scheduleSnapshotRefresh()
 
@@ -551,7 +554,9 @@ export default class Camera extends RingPolledDevice {
                 this.debug(`Received push notification of unknown type ${pushData.action}`)
                 return
         }
+        const pushTiming = describePushTiming(pushData)
         this.debug(`Received ${dingKind} push notification, expires in ${this.data[dingKind].duration} seconds`)
+        this.debug(formatPushTiming(pushTiming, dingKind))
 
         // Is this a new Ding or refresh of active ding?
         const newDing = Boolean(!this.data[dingKind].active_ding)
@@ -576,6 +581,9 @@ export default class Camera extends RingPolledDevice {
         // Publish MQTT active sensor state
         // Will republish to MQTT for new dings even if ding is already active
         this.publishDingState(dingKind)
+        if (pushTiming.detectedAt !== null) {
+            this.debug(`${dingKind} state published ${((Date.now()-pushTiming.detectedAt)/1000).toFixed(2)}s after Ring detected it`)
+        }
 
         // If new ding, begin expiration loop (only needed for first ding as others just extend time)
         if (newDing) {
