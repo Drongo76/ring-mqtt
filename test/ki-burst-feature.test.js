@@ -2,11 +2,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import KiBurstFeature from '../lib/ki-burst-feature.js'
 
-function makeHarness({ motionActive = true, lastDing = 1789019645 } = {}) {
+function makeHarness({ motionActive = true, lastDing = 1789019645, savedState = {} } = {}) {
     const calls = []
     const published = []
     const camera = {
         entity: {},
+        saved: 0,
+        getSavedState: () => savedState,
+        updateDeviceState: () => { camera.saved++ },
         data: { motion: { active_ding: motionActive, last_ding: lastDing } },
         debug: message => calls.push(['debug', String(message)]),
         mqttPublish: (topic, payload) => published.push({ topic, payload })
@@ -29,7 +32,7 @@ function makeHarness({ motionActive = true, lastDing = 1789019645 } = {}) {
     })
     const worker = { posted: [], postMessage: message => worker.posted.push(message) }
     feature.attachWorker(worker)
-    return { feature, camera, calls, published, controller, controllerOptions, worker }
+    return { feature, camera, calls, published, controller, controllerOptions, worker, liveControl }
 }
 
 test('registers the button, three frame cameras and the status sensor', () => {
@@ -115,4 +118,88 @@ test('republish re-emits status, attributes and stored frames without recomputin
     feature.republish()
     assert.deepEqual(published.map(entry => entry.topic), ['status', 'status/attr', 'frame/2'])
     assert.equal(JSON.parse(published[1].payload).frameCount, 3)
+})
+
+test('the warm switch is off by default and restored from the saved state', () => {
+    assert.equal(makeHarness().camera.data.ki_burst_warm.state, 'OFF')
+    const restored = makeHarness({ savedState: { ki_burst_warm: { state: 'ON' } } })
+    assert.equal(restored.camera.data.ki_burst_warm.state, 'ON')
+    assert.deepEqual(restored.worker.posted, [{ command: 'warm_start' }], 'a restored ON state starts the warm source')
+    assert.equal(makeHarness().worker.posted.length, 0)
+})
+
+test('switching warm mode on and off drives the worker, persists and publishes the switch', () => {
+    const { feature, camera, worker, published } = makeHarness()
+    camera.entity.ki_burst_warm.state_topic = 'warm/state'
+    feature.handleWarmCommand('ON')
+    assert.deepEqual(worker.posted.at(-1), { command: 'warm_start' })
+    assert.equal(camera.data.ki_burst_warm.state, 'ON')
+    assert.deepEqual(feature.persistedState(), { state: 'ON' })
+    assert.equal(camera.saved, 1)
+    assert.deepEqual(published.at(-1), { topic: 'warm/state', payload: 'ON' })
+    feature.handleWarmCommand('off')
+    assert.deepEqual(worker.posted.at(-1), { command: 'warm_stop' })
+    assert.equal(feature.warmReady, false)
+    assert.deepEqual(published.at(-1), { topic: 'warm/state', payload: 'OFF' })
+})
+
+test('an invalid warm command changes nothing', () => {
+    const { feature, camera, worker } = makeHarness()
+    feature.handleWarmCommand('maybe')
+    assert.equal(camera.data.ki_burst_warm.state, 'OFF')
+    assert.equal(worker.posted.length, 0)
+})
+
+test('a ready warm source starts a warm burst without touching the live session', async () => {
+    const { feature, calls } = makeHarness()
+    feature.handleWorkerMessage({ type: 'warm_state', ready: true, status: { enabled: true, state: 'warm' } })
+    assert.equal(feature.warmReady, true)
+    await feature.take()
+    assert.deepEqual(calls.map(call => call[0]), ['start'])
+    assert.equal(calls[0][1].source, 'warm')
+    assert.equal(calls[0][1].preRollMs, 3000)
+})
+
+test('without a ready warm source the burst runs cold and the live worker steps aside', async () => {
+    const { feature, calls } = makeHarness()
+    feature.handleWorkerMessage({ type: 'warm_state', ready: false, status: { enabled: true, state: 'starting' } })
+    await feature.take()
+    assert.deepEqual(calls.map(call => call[0]), ['yield', 'start'])
+    assert.equal(calls[1][1].source, 'cold')
+})
+
+test('a warm fallback makes the live worker step aside before the dedicated session starts', () => {
+    const { controllerOptions, calls } = makeHarness()
+    controllerOptions.onFallback('b1', 'No warm video source is available')
+    assert.deepEqual(calls.map(call => call[0]), ['debug', 'yield'])
+})
+
+test('warm state messages are claimed and published as compact status attributes', () => {
+    const { feature, camera, published } = makeHarness()
+    camera.entity.ki_burst_status.json_attributes_topic = 'status/attr'
+    const claimed = feature.handleWorkerMessage({
+        type: 'warm_state',
+        ready: true,
+        status: { enabled: true, state: 'warm', rotations: 2, buffer: { gopCount: 4, unitCount: 160, bytes: 900000, oldestStartAgeMs: 7000, newestAgeMs: 30, secret: 'x' } }
+    })
+    assert.equal(claimed, true)
+    const attributes = JSON.parse(published.at(-1).payload)
+    assert.equal(attributes.warm.ready, true)
+    assert.equal(attributes.warm.rotations, 2)
+    assert.deepEqual(Object.keys(attributes.warm.buffer).sort(), ['bytes', 'gopCount', 'newestAgeMs', 'oldestStartAgeMs', 'unitCount'])
+})
+
+test('ticket requests from the warm worker are answered through the live control', async () => {
+    const { feature, worker } = makeHarness()
+    assert.equal(feature.handleWorkerMessage({ type: 'warm_ticket_request', requestId: 7 }), true)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(worker.posted.at(-1), { command: 'warm_ticket', requestId: 7, ticket: 'ticket-xyz' })
+})
+
+test('a failing ticket request is reported back to the worker as an error', async () => {
+    const { feature, worker, liveControl } = makeHarness()
+    liveControl.requestTicket = async () => { throw new Error('Ring said no') }
+    feature.handleWorkerMessage({ type: 'warm_ticket_request', requestId: 8 })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(worker.posted.at(-1), { command: 'warm_ticket', requestId: 8, error: 'Ring said no' })
 })

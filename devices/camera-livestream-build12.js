@@ -2,6 +2,11 @@ import { parentPort, workerData } from 'worker_threads'
 import { WebrtcConnection } from '../lib/streaming/webrtc-connection.js'
 import { Build12StreamingSession } from '../lib/streaming/build12-streaming-session.js'
 import { captureBurstWithCleanup } from '../lib/ki-burst-worker-session.js'
+import { getVideoOnlySdp } from '../lib/streaming/build12-streaming-session.js'
+import { WarmBurstService } from '../lib/warm-burst-service.js'
+import { captureBurstFromWarmSource } from '../lib/streaming/warm-burst-capture.js'
+import { reservePorts, RtpSplitter } from '@homebridge/camera-utils'
+import pathToFfmpeg from 'ffmpeg-for-homebridge'
 
 const cameraData = {
     name: workerData.deviceName,
@@ -9,6 +14,7 @@ const cameraData = {
 }
 
 let active = null
+let warmService = null
 let sequence = 0
 let commandQueue = Promise.resolve()
 
@@ -42,6 +48,38 @@ async function stopActive(reason = 'stop') {
     if (current.kind === 'live') {
         post('state', { kind: 'live', data: 'inactive', requestId: current.requestId, reason })
     }
+}
+
+function getWarmService() {
+    if (warmService) return warmService
+    warmService = new WarmBurstService({
+        post,
+        openSession: ticket => new Build12StreamingSession(cameraData, new WebrtcConnection(ticket, cameraData)),
+        captureFromWarm: async ({ warm, burstId, options }) => {
+            const splitter = new RtpSplitter()
+            try {
+                return await captureBurstFromWarmSource({
+                    warm,
+                    burstId,
+                    cameraId: cameraData.id,
+                    outputDir: options?.outputDir,
+                    ffmpegPath: pathToFfmpeg,
+                    reservePort: async () => (await reservePorts({ count: 2 }))[0],
+                    sendPacket: (port, packet) => splitter.send(packet, { port }),
+                    getVideoOnlySdp,
+                    options,
+                    preRollMs: options?.preRollMs,
+                    emit: (stage, details = {}) => {
+                        const suffix = Object.keys(details).length ? ` ${JSON.stringify(details)}` : ''
+                        post('log_info', { data: `KI Burst ${burstId} DIAG ${stage}${suffix}` })
+                    }
+                })
+            } finally {
+                splitter.close()
+            }
+        }
+    })
+    return warmService
 }
 
 async function startLive(data) {
@@ -98,6 +136,7 @@ async function startLive(data) {
 }
 
 async function startBurst(data) {
+    if (data.source === 'warm') return startWarmBurst(data)
     await stopActive('ki-burst-preflight')
     const id = ++sequence
     const connection = new WebrtcConnection(data.streamData.ticket, cameraData)
@@ -115,13 +154,30 @@ async function startBurst(data) {
 
     if (!isCurrent(id)) return
     active = null
+    reportBurst(data, result, failure)
+}
 
+async function startWarmBurst(data) {
+    // The warm session is separate from `active`, so a running live stream is not disturbed.
+    post('log_info', { data: `KI Burst ${data.burstId} starting from the warm video buffer` })
+    let result = null
+    let failure = null
+    try {
+        result = await getWarmService().burst({ burstId: data.burstId, options: data.options })
+    } catch (error) {
+        failure = error
+    }
+    reportBurst(data, result, failure)
+}
+
+function reportBurst(data, result, failure) {
     if (failure) {
         const diagnostics = failure?.kiBurstDiagnostics && typeof failure.kiBurstDiagnostics === 'object' ? failure.kiBurstDiagnostics : {}
         logRejectedPtsCandidates(data.burstId, diagnostics.rejectedPtsCandidates)
         post('burst_failed', {
             burstId: data.burstId,
             error: failure?.message || String(failure),
+            fallback: failure?.fallback || null,
             diagnostics
         })
         post('log_error', { data: `KI Burst ${data.burstId} failed: ${failure?.stack || failure?.message || failure}` })
@@ -174,7 +230,10 @@ async function startBurst(data) {
         frameRawChecksums: result.frameRawChecksums,
         frameHashes: result.frameHashes,
         rtpIntegrity: result.rtpIntegrity,
-        rejectedPtsCandidates: result.rejectedPtsCandidates
+        rejectedPtsCandidates: result.rejectedPtsCandidates,
+        source: result.source || 'cold',
+        preRollMs: result.preRollMs ?? null,
+        replayedUnits: result.replayedUnits ?? null
     })
     post('log_info', { data: `KI Burst ${data.burstId} complete: exactly 3 clean decoded frames selected after buffered observation` })
 }
@@ -193,6 +252,11 @@ async function handleCommand(data) {
 }
 
 parentPort.on('message', data => {
+    // Warm commands never wait behind a running burst: a ticket answer would otherwise deadlock it.
+    if (data.command === 'warm_start') { getWarmService().start(); return }
+    if (data.command === 'warm_stop') { warmService?.stop(); return }
+    if (data.command === 'warm_ticket') { warmService?.handleTicket(data); return }
+
     if (data.command === 'stop') {
         const reason = data.reason || 'stop'
         if (reason === 'live-allow-off' && active?.kind === 'burst') {

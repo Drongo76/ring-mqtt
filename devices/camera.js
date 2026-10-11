@@ -315,6 +315,7 @@ export default class Camera extends RingPolledDevice {
             live_allow: {
                 state: this.data.live_allow.state
             },
+            ki_burst_warm: this.kiBurst.persistedState(),
             auto_off: {
                 enabled: this.data.auto_off.enabled,
                 minutes: this.data.auto_off.minutes
@@ -1171,6 +1172,9 @@ publishEventSelectState(isPublish) {
                 break;
             case 'ki_burst/command':
                 this.kiBurst.handleCommand(message)
+                break;
+            case 'ki_burst_warm/command':
+                this.kiBurst.handleWarmCommand(message)
                 break;
             case 'auto_off_enabled/command':
                 this.setAutoOffEnabled(message)
