@@ -19,8 +19,6 @@ import {
     parseShowinfoFrameLine
 } from '../lib/streaming/build12-streaming-session.js'
 import { H264RtpFrameGate, parseRtpPacket, payloadStartsH264Idr } from '../lib/streaming/h264-rtp-frame-gate.js'
-import { homeAssistantSlug } from '../lib/build12-patch.js'
-import { removeBrokenStillImageUrl } from '../lib/build14-patch.js'
 import Camera from '../devices/camera.js'
 
 function makeController({ timeoutMs = KI_BURST_CONTROLLER_TIMEOUT_MS } = {}) {
@@ -331,32 +329,6 @@ test('worker burst cleanup stops the session on capture failure', async () => {
     assert.equal(stops, 1)
     assert.equal(result, null)
     assert.match(failure.message, /capture failed/)
-})
-
-test('build-14 removes broken Jinja still_Image_URL so JSON publication omits the field', () => {
-    const camera = {
-        data: {
-            stream: {
-                live: {
-                    streamSource: 'rtsp://ring/live',
-                    stillImageURL: 'https://homeassistant:8123{{ states.camera.haustur_snapshot.attributes.entity_picture }}'
-                }
-            }
-        }
-    }
-    removeBrokenStillImageUrl(camera)
-    const attributes = {
-        stream_Source: camera.data.stream.live.streamSource,
-        still_Image_URL: camera.data.stream.live.stillImageURL
-    }
-    const json = JSON.stringify(attributes)
-    assert.equal(json.includes('still_Image_URL'), false)
-    assert.equal(json.includes('{{ states.camera.haustur_snapshot.attributes.entity_picture }}'), false)
-})
-
-test('Home Assistant still-image slug handles umlauts such as Haustür', () => {
-    assert.equal(homeAssistantSlug('Haustür'), 'haustur')
-    assert.equal(homeAssistantSlug('Vordere Tür Kamera'), 'vordere_tur_kamera')
 })
 
 test('snapshot mode validation rejects values outside the configured options', () => {

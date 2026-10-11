@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import Camera from '../devices/camera.js'
-import { publishBurstState } from '../lib/build12-patch.js'
+import { publishBurstState } from '../lib/ki-burst-publisher.js'
 
 function makeSnapshot(contents, timeMillis) {
     const snapshot = Buffer.from(contents)
