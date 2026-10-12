@@ -150,3 +150,39 @@ test('Motion Snapshot remains final F1 while first clean and early adaptive cand
         'EARLY_ADAPTIVE'
     ])
 })
+
+test('a timeline hole in the bounded window falls back to the earliest separated candidate instead of failing', () => {
+    const base = baseFrame()
+    // Packet loss left no decoded frame between 400 ms and 3200 ms.
+    const result = finalize([
+        [0, base, 0],
+        [400, patch(base, 10, 20, 8, 8, 92), 1],
+        [3200, patch(base, 40, 20, 30, 30, 200), 2],
+        [3600, patch(base, 60, 20, 30, 30, 210), 3],
+        [4400, patch(base, 80, 20, 30, 30, 220), 4]
+    ])
+
+    assert.equal(result.selected[0].sourceIndex, 0)
+    assert.equal(result.selected[1].sourceIndex, 2)
+    assert.equal(result.selected[1].reason, 'late_separated_fallback')
+    assert.equal(result.selected[2].sourceIndex, 4) // first candidate >= 1000 ms after F2
+    assert.ok(result.selected[1].elapsedMs - result.selected[0].elapsedMs >= DEFAULT_MIN_SELECTION_SEPARATION_MS)
+})
+
+test('selection still fails when no candidate is separated from the first clean frame', () => {
+    const base = baseFrame()
+    const selector = new AdaptiveFrameSelector()
+    for (const [elapsedMs, index] of [[0, 0], [200, 1], [500, 2], [900, 3]]) {
+        selector.evaluate(candidate(base, elapsedMs, index))
+    }
+    assert.throws(() => selector.finalizeBuffered(), /could not find an early candidate/)
+})
+
+test('the late fallback never picks the last candidate so a chronological tail exists', () => {
+    const base = baseFrame()
+    const selector = new AdaptiveFrameSelector()
+    for (const [elapsedMs, index] of [[0, 0], [200, 1], [4000, 2]]) {
+        selector.evaluate(candidate(base, elapsedMs, index))
+    }
+    assert.throws(() => selector.finalizeBuffered(), /could not find an early candidate/)
+})
