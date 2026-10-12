@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { KeyframeTimeline } from '../lib/streaming/keyframe-timeline.js'
-import { H264RtpFrameGate } from '../lib/streaming/h264-rtp-frame-gate.js'
+import { H264RtpFrameGate, describeAccessUnitNalTypes } from '../lib/streaming/h264-rtp-frame-gate.js'
 
 function clock(start = 1000) {
     let value = start
@@ -108,7 +108,7 @@ test('dropped keyframe candidates report packet count, missing packets and marke
     gate.push(makeRtp({ sequenceNumber: 20, timestamp: 90000, payload: idrStart }))
     gate.push(makeRtp({ sequenceNumber: 22, timestamp: 90000, marker: true, payload: idrEnd }))
     for (const frame of [...gate.frames.values()]) gate.rejectFrame(frame, 'reorder-timeout-missing-packets')
-    assert.deepEqual(timeline.snapshot().events, ['+0 au drop reason=reorder-timeout-missing-packets idrStart=yes pkts=2 missing=1 marker=yes'])
+    assert.deepEqual(timeline.snapshot().events, ['+0 au drop reason=reorder-timeout-missing-packets idrStart=yes pkts=2 missing=1 marker=yes nals=5'])
 })
 
 test('duplicate packets are counted per 500 ms bucket even beyond the listed packets', () => {
@@ -120,4 +120,24 @@ test('duplicate packets are counted per 500 ms bucket even beyond the listed pac
     timeline.packet({ sequenceNumber: 3, duplicate: true })
     timeline.packet({ sequenceNumber: 4, duplicate: false })
     assert.deepEqual(timeline.snapshot().duplicatesPer500ms, { 0: 2, 500: 1 })
+})
+
+test('access unit NAL types cover single NALs, STAP-A members and FU-A starts only', () => {
+    const sps = Buffer.from([0x67, 0x42])
+    const pps = Buffer.from([0x68, 0xce])
+    const stapA = Buffer.concat([Buffer.from([0x78]), Buffer.from([0, sps.length]), sps, Buffer.from([0, pps.length]), pps])
+    const fuStartIdr = Buffer.from([0x7c, 0x85, 0x01])
+    const fuMiddle = Buffer.from([0x7c, 0x05, 0x02])
+    const fuStartNonIdr = Buffer.from([0x7c, 0x81, 0x01])
+    const sei = Buffer.from([0x06, 0x05])
+    const packets = payloads => payloads.map(payload => ({ payload }))
+    assert.deepEqual(describeAccessUnitNalTypes(packets([stapA, fuStartIdr, fuMiddle])), [5, 7, 8])
+    assert.deepEqual(describeAccessUnitNalTypes(packets([sei, fuStartNonIdr, fuMiddle])), [1, 6])
+    assert.deepEqual(describeAccessUnitNalTypes(packets([fuMiddle])), [])
+})
+
+test('dropped large access units report which NAL types they carried', () => {
+    const timeline = new KeyframeTimeline({ now: clock().now, startedAtMs: 1000 })
+    timeline.accessUnit({ accepted: false, reason: 'reorder-timeout-no-keyframe-start', hasKeyframeStart: false, packets: 112, missing: 0, markerSeen: true, nalTypes: [1, 6] })
+    assert.deepEqual(timeline.snapshot().events, ['+0 au drop reason=reorder-timeout-no-keyframe-start idrStart=no pkts=112 missing=0 marker=yes nals=1,6'])
 })
