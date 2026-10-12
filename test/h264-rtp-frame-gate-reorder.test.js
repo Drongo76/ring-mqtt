@@ -222,3 +222,48 @@ test('marker-less current AU expires, resyncs, and cannot pin expectedSequence f
     assert.equal(gate.expectedSequence, 2202)
     assert.equal(finalStats.pendingAccessUnits.length, 0)
 })
+
+test('a hole in the first IDR is still repaired by a retransmission after a burst of later frames', () => {
+    // The camera sends its start-up backlog of P-frames right behind the keyframe. A hole in the
+    // keyframe must be waited for by time, not abandoned after a few dozen later packets.
+    const timers = makeFakeTimers()
+    const gate = new H264RtpFrameGate({
+        setTimer: callback => timers.setTimer(callback),
+        clearTimer: id => timers.clearTimer(id)
+    })
+
+    gate.push(makeRtp({ sequenceNumber: 700, timestamp: 900000, payload: idrStart }))
+    assert.equal(gate.push(makeRtp({ sequenceNumber: 702, timestamp: 900000, marker: true, payload: idrEnd })), null)
+
+    for (let frame = 0; frame < 40; frame++) {
+        const timestamp = 900000 + 3000 * (frame + 1)
+        gate.push(makeRtp({ sequenceNumber: 703 + frame * 2, timestamp, payload: pStart }))
+        gate.push(makeRtp({ sequenceNumber: 704 + frame * 2, timestamp, marker: true, payload: pEnd }))
+    }
+    assert.equal(gate.snapshotStats().droppedAccessUnits, 0)
+
+    const result = gate.push(makeRtp({ sequenceNumber: 701, timestamp: 900000, payload: idrMiddle }))
+    assert.equal(result.accepted, true)
+    assert.equal(result.keyframe, true)
+    assert.equal(gate.snapshotStats().auDiagnostics.find(entry => entry.timestamp === 900000).finalizeReason, 'complete-after-reorder')
+})
+
+test('a hole that is never repaired is still dropped by time after a burst of later frames', () => {
+    const timers = makeFakeTimers()
+    const gate = new H264RtpFrameGate({
+        setTimer: callback => timers.setTimer(callback),
+        clearTimer: id => timers.clearTimer(id)
+    })
+
+    gate.push(makeRtp({ sequenceNumber: 800, timestamp: 990000, payload: idrStart }))
+    gate.push(makeRtp({ sequenceNumber: 802, timestamp: 990000, marker: true, payload: idrEnd }))
+    for (let frame = 0; frame < 40; frame++) {
+        const timestamp = 990000 + 3000 * (frame + 1)
+        gate.push(makeRtp({ sequenceNumber: 803 + frame * 2, timestamp, payload: pStart }))
+        gate.push(makeRtp({ sequenceNumber: 804 + frame * 2, timestamp, marker: true, payload: pEnd }))
+    }
+    timers.fireAll()
+    const stats = gate.snapshotStats()
+    assert.equal(stats.pendingAccessUnits.length, 0)
+    assert.equal(stats.auDiagnostics.find(entry => entry.timestamp === 990000).rejectReason, 'reorder-timeout-missing-packets')
+})
