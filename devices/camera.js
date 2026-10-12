@@ -5,6 +5,7 @@ import { Worker } from 'worker_threads'
 import { spawn } from 'child_process'
 import { parseISO, addSeconds } from 'date-fns';
 import chalk from 'chalk'
+import { parsePeopleOnlyCommand, buildPeopleOnlySettings, readPeopleOnlyState } from '../lib/people-only-mode.js'
 import { describePushTiming, formatPushTiming, describeDetectionSettings } from '../lib/ring-push-timing.js'
 
 const snapshotRetryAttempts = 3
@@ -252,6 +253,13 @@ export default class Camera extends RingPolledDevice {
                 component: 'switch',
                 category: 'config'
             },
+            ...readPeopleOnlyState(this.device.data) !== null ? {
+                people_only: {
+                    component: 'switch',
+                    category: 'config',
+                    icon: 'mdi:account-search'
+                }
+            } : {},
             ...this.device.data.features?.motion_message_enabled ? {
                 motion_warning: {
                     component: 'switch',
@@ -664,6 +672,14 @@ export default class Camera extends RingPolledDevice {
         if (this.device.data.settings.motion_detection_enabled !== this.data.motion.detection_enabled || isPublish) {
             this.publishMotionAttributes()
             this.mqttPublish(this.entity.motion_detection.state_topic, this.device.data?.settings?.motion_detection_enabled ? 'ON' : 'OFF')
+        }
+
+        if (this.entity.hasOwnProperty('people_only')) {
+            const peopleOnlyState = readPeopleOnlyState(this.device.data)
+            if (peopleOnlyState !== null && (peopleOnlyState !== this.data.motion.people_only || isPublish)) {
+                this.data.motion.people_only = peopleOnlyState
+                this.mqttPublish(this.entity.people_only.state_topic, peopleOnlyState)
+            }
         }
 
         if (this.entity.hasOwnProperty('motion_warning') && (this.device.data.settings.motion_announcement !== this.data.motion.warning_enabled || isPublish)) {
@@ -1295,6 +1311,9 @@ publishEventSelectState(isPublish) {
             case 'motion_warning/command':
                 this.setMotionWarningState(message)
                 break;
+            case 'people_only/command':
+                this.setPeopleOnlyState(message)
+                break;
             case 'motion_duration/command':
                 this.setDingDuration(message, 'motion')
                 break;
@@ -1354,6 +1373,28 @@ publishEventSelectState(isPublish) {
         } catch(err) {
             if (err.message === 'Response code 404 (Not Found)') {
                 this.debug('Shared accounts cannot change motion detection settings!')
+            } else {
+                this.debug(chalk.yellow(err.message))
+                this.debug(err.stack)
+            }
+        }
+    }
+
+    // Switch Ring's "People Only" motion mode on or off
+    async setPeopleOnlyState(message) {
+        this.debug(`Received set people only mode ${message}`)
+        const enabled = parsePeopleOnlyCommand(message)
+        if (enabled === null) {
+            this.debug('Received unknown command for people only mode')
+            return
+        }
+        try {
+            await this.device.setDeviceSettings(buildPeopleOnlySettings(enabled))
+            this.data.motion.people_only = enabled ? 'ON' : 'OFF'
+            this.mqttPublish(this.entity.people_only.state_topic, this.data.motion.people_only)
+        } catch(err) {
+            if (err.message === 'Response code 404 (Not Found)') {
+                this.debug('Shared accounts cannot change people only mode!')
             } else {
                 this.debug(chalk.yellow(err.message))
                 this.debug(err.stack)
