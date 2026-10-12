@@ -88,3 +88,10 @@ test('an enlarged receive buffer survives a burst that overflows the default buf
     assert.ok(normal.received < 600, `default buffer already held every packet (${normal.received})`)
     assert.ok(enlarged.received > normal.received, `enlarged ${enlarged.received} vs default ${normal.received}`)
 })
+
+test('throwing ICE getters never escape into the peer connection subscriber', () => {
+    const hostile = { get iceTransports() { throw new Error('internals changed') } }
+    assert.deepEqual(enlargeIceReceiveBuffers(hostile), [])
+    const partial = { iceTransports: [{ get connection() { throw new Error('boom') } }] }
+    assert.deepEqual(enlargeIceReceiveBuffers(partial), [])
+})

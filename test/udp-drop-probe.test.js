@@ -33,7 +33,7 @@ test('delta reports datagrams, receive buffer errors and dropping sockets', () =
     })[path]
     const before = readUdpStats(read(snmp(100, 1, 1), procNetUdp(2)))
     const after = readUdpStats(read(snmp(3250, 41, 43), procNetUdp(42)))
-    assert.equal(describeUdpDelta(before, after), 'udp in=3150 rcvbufErrors=40 inErrors=42 socketDrops=20001:40 rmem default=212992 max=212992')
+    assert.equal(describeUdpDelta(before, after), 'udp in=3150 rcvbufErrors=40 inErrors=42 socketDrops=20001:40 udpSockets=2->2 rmem default=212992 max=212992')
 })
 
 test('missing /proc files never throw', () => {
