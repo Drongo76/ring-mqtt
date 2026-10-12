@@ -51,7 +51,7 @@ test('only the first packets are listed, the rest are counted', () => {
 
 test('timeline is bounded and reports truncation', () => {
     const timeline = new KeyframeTimeline({ now: clock().now, startedAtMs: 1000, maxEvents: 3 })
-    for (let index = 0; index < 10; index++) timeline.mark('x')
+    for (let index = 0; index < 10; index++) timeline.mark(`x${index}`)
     const snapshot = timeline.snapshot()
     assert.equal(snapshot.events.length, 3)
     assert.equal(snapshot.truncated, true)
@@ -77,8 +77,7 @@ test('gate records a missed IDR start, dropped P frames and the first accepted I
     assert.equal(result.accepted, true)
 
     const events = timeline.snapshot().events
-    assert.ok(events.some(event => /^\+0 au drop reason=test-reject idrStart=no$/.test(event)), events.join('\n'))
-    assert.ok(events.some(event => /^\+300 au drop reason=test-reject idrStart=no$/.test(event)), events.join('\n'))
+    assert.ok(events.some(event => event === '+0 au drop reason=test-reject idrStart=no x2 until +300'), events.join('\n'))
     assert.equal(events.at(-1), '+2300 au ok IDR pkts=2')
 })
 
@@ -87,4 +86,38 @@ test('gate works unchanged without a timeline', () => {
     gate.push(makeRtp({ sequenceNumber: 1, timestamp: 90000, payload: idrStart }))
     const result = gate.push(makeRtp({ sequenceNumber: 2, timestamp: 90000, marker: true, payload: idrEnd }))
     assert.equal(result.accepted, true)
+})
+
+test('identical consecutive events are folded with count and end time', () => {
+    const time = clock(0)
+    const timeline = new KeyframeTimeline({ now: time.now, startedAtMs: 0, maxEvents: 2 })
+    for (let index = 0; index < 5; index++) {
+        timeline.accessUnit({ accepted: false, reason: 'no-key', hasKeyframeStart: false, packets: 3 })
+        time.advance(50)
+    }
+    timeline.mark('resync')
+    timeline.mark('after')
+    assert.deepEqual(timeline.snapshot().events, ['+0 au drop reason=no-key idrStart=no x5 until +200', '+250 resync'])
+    assert.equal(timeline.snapshot().truncated, true)
+})
+
+test('dropped keyframe candidates report packet count, missing packets and marker', () => {
+    const time = clock(1000)
+    const timeline = new KeyframeTimeline({ now: time.now, startedAtMs: 1000, maxPackets: 0 })
+    const gate = new H264RtpFrameGate({ timeline, setTimer: () => 0, clearTimer: () => {} })
+    gate.push(makeRtp({ sequenceNumber: 20, timestamp: 90000, payload: idrStart }))
+    gate.push(makeRtp({ sequenceNumber: 22, timestamp: 90000, marker: true, payload: idrEnd }))
+    for (const frame of [...gate.frames.values()]) gate.rejectFrame(frame, 'reorder-timeout-missing-packets')
+    assert.deepEqual(timeline.snapshot().events, ['+0 au drop reason=reorder-timeout-missing-packets idrStart=yes pkts=2 missing=1 marker=yes'])
+})
+
+test('duplicate packets are counted per 500 ms bucket even beyond the listed packets', () => {
+    const time = clock(0)
+    const timeline = new KeyframeTimeline({ now: time.now, startedAtMs: 0, maxPackets: 0 })
+    timeline.packet({ sequenceNumber: 1, duplicate: true })
+    timeline.packet({ sequenceNumber: 2, duplicate: true })
+    time.advance(700)
+    timeline.packet({ sequenceNumber: 3, duplicate: true })
+    timeline.packet({ sequenceNumber: 4, duplicate: false })
+    assert.deepEqual(timeline.snapshot().duplicatesPer500ms, { 0: 2, 500: 1 })
 })
