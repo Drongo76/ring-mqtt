@@ -7,6 +7,7 @@ import { parseISO, addSeconds } from 'date-fns';
 import chalk from 'chalk'
 import { parsePeopleOnlyCommand, buildPeopleOnlySettings, readPeopleOnlyState } from '../lib/people-only-mode.js'
 import { describePushTiming, formatPushTiming, describeDetectionSettings } from '../lib/ring-push-timing.js'
+import { rememberMotionSnapshot } from '../lib/ki-burst-motion-snapshot.js'
 
 const snapshotRetryAttempts = 3
 const snapshotRetryDelaySeconds = 1
@@ -869,6 +870,8 @@ publishEventSelectState(isPublish) {
         const previousSnapshot = this.data.snapshot.cache
         const previousSourceTimestamp = this.data.snapshot.sourceTimestamp
         const refreshGeneration = type === 'interval' ? null : ++this.snapshotRefreshGeneration
+        // The Motion event this snapshot belongs to; later pushes may move last_ding on before the image arrives.
+        const motionTimestamp = type === 'motion' ? Number(this.data.motion?.last_ding) : NaN
 
         if (this.device.snapshotsAreBlocked) {
             this.debug('Snapshots are unavailable, check if motion capture is disabled manually or via modes settings')
@@ -936,6 +939,19 @@ publishEventSelectState(isPublish) {
 
         if (newSnapshot) {
             if (type !== 'interval' && refreshGeneration !== this.snapshotRefreshGeneration) {
+                // A newer request owns the published snapshot, but a Motion Snapshot is still the
+                // right Frame 1 for its own Motion event.
+                if (type === 'motion' && Number.isFinite(motionTimestamp) && motionTimestamp > 0) {
+                    const current = this.data.snapshot.motionCapture
+                    if (!current || current.motionTimestamp !== motionTimestamp) {
+                        rememberMotionSnapshot(this.data.snapshot, {
+                            image: newSnapshot,
+                            motionTimestamp,
+                            capturedAt: Math.round(Date.now()/1000),
+                            sourceTimestamp: Number(newSnapshot.timeMillis)
+                        })
+                    }
+                }
                 this.debug(`Discarding superseded ${type} snapshot because a newer snapshot request started`)
                 return false
             }
@@ -947,6 +963,14 @@ publishEventSelectState(isPublish) {
             const sourceTimestamp = Number(newSnapshot.timeMillis)
             if (Number.isFinite(sourceTimestamp)) {
                 this.data.snapshot.sourceTimestamp = sourceTimestamp
+            }
+            if (type === 'motion' && Number.isFinite(motionTimestamp) && motionTimestamp > 0) {
+                rememberMotionSnapshot(this.data.snapshot, {
+                    image: newSnapshot,
+                    motionTimestamp,
+                    capturedAt: this.data.snapshot.timestamp,
+                    sourceTimestamp
+                })
             }
             this.publishSnapshot()
             return true
