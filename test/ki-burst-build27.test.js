@@ -163,13 +163,14 @@ function assertNoHeavyRtpArrays(attributes, label) {
 
 test('build-27 complete -> immediate build14 publish -> periodic republishes never restore raw RTP or selector Frame1 hash', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ki-burst-build27-lifecycle-'))
+    let camera
     try {
         const paths = [join(dir, 'frame-1.jpg'), join(dir, 'frame-2.jpg'), join(dir, 'frame-3.jpg')]
         await writeFile(paths[0], Buffer.from('SELECTOR_FRAME_A'))
         await writeFile(paths[1], Buffer.from('SELECTOR_FRAME_B'))
         await writeFile(paths[2], Buffer.from('SELECTOR_FRAME_C'))
 
-        const camera = makeCamera()
+        camera = makeCamera()
         const fullRtpIntegrity = makeHeavyRtpIntegrity()
         const details = completionDetails(paths, fullRtpIntegrity)
         const selectorFrame1Hash = details.frameHashes[0]
@@ -254,6 +255,8 @@ test('build-27 complete -> immediate build14 publish -> periodic republishes nev
 
         console.log(`build-27 worst-case lifecycle public attributes bytes: ${worstCaseBytes}`)
     } finally {
+        // The burst history is written in the background; let it finish before the folder goes away.
+        await camera?.kiBurstHistoryPending
         await rm(dir, { recursive: true, force: true })
     }
 })
