@@ -174,7 +174,8 @@ async function startBurst(data) {
         frameRawChecksums: result.frameRawChecksums,
         frameHashes: result.frameHashes,
         rtpIntegrity: result.rtpIntegrity,
-        rejectedPtsCandidates: result.rejectedPtsCandidates
+        rejectedPtsCandidates: result.rejectedPtsCandidates,
+        candidateArchive: Array.isArray(result.candidateArchive) ? result.candidateArchive : []
     })
     post('log_info', { data: `KI Burst ${data.burstId} complete: exactly 3 clean decoded frames selected after buffered observation` })
 }
