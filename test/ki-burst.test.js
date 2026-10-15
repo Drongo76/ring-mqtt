@@ -108,6 +108,7 @@ test('KI Burst opens one dedicated session with buffered observation and complet
         frameRawChecksums: ['A', 'B', 'C'],
         frameHashes: ['a', 'b', 'c'],
         rtpIntegrity: { acceptedAccessUnits: 80 },
+        candidateArchive: [{ elapsedMs: 500, sourceIndex: 5, observedAt: '2026-09-06T08:00:00.500Z', jpeg: Buffer.from('c') }],
         capturedAt: '2026-09-06T08:00:07.350Z'
     })
 
@@ -127,6 +128,8 @@ test('KI Burst opens one dedicated session with buffered observation and complet
     assert.equal(details.totalBurstDurationMs, 7350)
     assert.deepEqual(details.framePts, [0, 288000, 544500])
     assert.deepEqual(details.frameHashes, ['a', 'b', 'c'])
+    assert.equal(details.candidateArchive.length, 1)
+    assert.equal(details.candidateArchive[0].sourceIndex, 5)
     assert.equal(fixture.sent.some(message => message.command === 'start'), false)
 })
 
