@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readdir, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { AdaptiveFrameSelector, DEFAULT_FALLBACK_SELECTION_WINDOW_MS } from '../lib/streaming/adaptive-frame-selector.js'
+import { AdaptiveFrameSelector, DEFAULT_SPREAD_WINDOW_END_MS, DEFAULT_SPREAD_WINDOW_START_MS } from '../lib/streaming/adaptive-frame-selector.js'
 import {
     candidateFilenameForSourceIndex,
     inspectCandidateJpegFiles,
@@ -74,15 +74,16 @@ test('88-candidate physical JPEG inventory supports the early selector and every
         restrictSelectorCandidatesToExistingJpegs(selector, inventory.existingSourceIndices)
         const { selected } = selector.finalizeBuffered()
         assert.equal(selected[0].sourceIndex, 0)
-        assert.deepEqual(selected.map(candidate => candidate.sourceIndex), [0, 15, 30])
-        assert.ok(selected[1].elapsedMs <= DEFAULT_FALLBACK_SELECTION_WINDOW_MS)
+        assert.deepEqual(selected.map(candidate => candidate.sourceIndex), [0, 51, 66])
+        assert.ok(selected[1].elapsedMs >= DEFAULT_SPREAD_WINDOW_START_MS)
+        assert.ok(selected[1].elapsedMs <= DEFAULT_SPREAD_WINDOW_END_MS)
         assert.equal(selected.some(candidate => candidate.sourceIndex === 86), false, 'late frame #86 must not be preferred just because it is visually diverse')
         assert.ok(selected.every(candidate => inventory.existingSourceIndices.includes(candidate.sourceIndex)))
 
         const loaded = await loadSelectedCandidateJpegs(tempDir, selected)
         assert.equal(loaded.frames.length, 3)
         assert.equal(new Set(loaded.frameHashes).size, 3)
-        assert.deepEqual(loaded.sourceIndices, [0, 15, 30])
+        assert.deepEqual(loaded.sourceIndices, [0, 51, 66])
     } finally {
         await rm(tempDir, { recursive: true, force: true })
     }
