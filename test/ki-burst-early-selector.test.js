@@ -4,7 +4,9 @@ import {
     AdaptiveFrameSelector,
     DEFAULT_FALLBACK_SELECTION_WINDOW_MS,
     DEFAULT_MIN_SELECTION_SEPARATION_MS,
-    DEFAULT_OBSERVATION_WINDOW_MS
+    DEFAULT_OBSERVATION_WINDOW_MS,
+    DEFAULT_SPREAD_WINDOW_END_MS,
+    DEFAULT_SPREAD_WINDOW_START_MS
 } from '../lib/streaming/adaptive-frame-selector.js'
 import { composeKiBurstFrames } from '../lib/ki-burst-output.js'
 
@@ -71,7 +73,7 @@ test('F3 is never earlier than F2 plus 1000 ms', () => {
     assert.ok(result.selected[1].elapsedMs - result.selected[0].elapsedMs >= DEFAULT_MIN_SELECTION_SEPARATION_MS)
 })
 
-test('static scene does not send F3 to the end of the 6000 ms observation window', () => {
+test('static scene keeps F3 inside the spread window and not at the end of the 6000 ms observation window', () => {
     const base = baseFrame()
     const frames = []
     for (let elapsedMs = 0, index = 0; elapsedMs <= 6000; elapsedMs += 500, index++) {
@@ -80,7 +82,8 @@ test('static scene does not send F3 to the end of the 6000 ms observation window
     const result = finalize(frames)
 
     assert.equal(DEFAULT_OBSERVATION_WINDOW_MS, 6000)
-    assert.ok(result.selected[1].elapsedMs <= 1500)
+    assert.ok(result.selected[1].elapsedMs >= DEFAULT_SPREAD_WINDOW_START_MS)
+    assert.ok(result.selected[1].elapsedMs <= DEFAULT_SPREAD_WINDOW_END_MS)
     assert.notEqual(result.selected[1].elapsedMs, 6000)
 })
 

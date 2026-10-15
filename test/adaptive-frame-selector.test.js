@@ -7,6 +7,8 @@ import {
     DEFAULT_FALLBACK_SELECTION_WINDOW_MS,
     DEFAULT_MIN_SELECTION_SEPARATION_MS,
     DEFAULT_OBSERVATION_WINDOW_MS,
+    DEFAULT_SPREAD_WINDOW_END_MS,
+    DEFAULT_SPREAD_WINDOW_START_MS,
     calculateBlockLumaDifference,
     calculateBrightnessCompensatedBlockLumaDifference
 } from '../lib/streaming/adaptive-frame-selector.js'
@@ -122,7 +124,7 @@ test('global exposure shift is compensated and cannot force a late selection', (
     assert.match(result.selected[1].reason, /^early_low_diversity_/)
 })
 
-test('static scene returns an early chronological set and never stretches the adaptive frame to 6000 ms', () => {
+test('static scene returns F3 inside the spread window and never stretches it to 6000 ms', () => {
     const selector = new AdaptiveFrameSelector()
     const base = baseFrame()
     for (const [index, elapsedMs] of [0, 1000, 2000, 3000, 4000, 5000, 6000].entries()) {
@@ -131,13 +133,15 @@ test('static scene returns an early chronological set and never stretches the ad
 
     const result = selector.finalizeBuffered()
     assert.equal(result.selected.length, 3)
-    assert.deepEqual(result.selected.map(frame => frame.sourceIndex), [0, 1, 2])
-    assert.equal(result.selected[1].elapsedMs, 1000)
-    assert.ok(result.selected[1].elapsedMs <= DEFAULT_FALLBACK_SELECTION_WINDOW_MS)
+    assert.deepEqual(result.selected.map(frame => frame.sourceIndex), [0, 4, 5])
+    assert.equal(result.selected[1].elapsedMs, 4000)
+    assert.equal(result.selected[1].reason, 'spread_low_diversity_fallback')
+    assert.ok(result.selected[1].elapsedMs >= DEFAULT_SPREAD_WINDOW_START_MS)
+    assert.ok(result.selected[1].elapsedMs <= DEFAULT_SPREAD_WINDOW_END_MS)
     assert.equal(result.diagnostics.pairwiseDifferenceScores[0].score, 0)
 })
 
-test('slow movement keeps first clean and chooses an early changed candidate', () => {
+test('slow movement keeps first clean and chooses a changed candidate in the spread window', () => {
     const selector = new AdaptiveFrameSelector()
     const base = baseFrame()
     selector.evaluate(candidate(base, 0, { sourceIndex: 0 }))
@@ -147,8 +151,41 @@ test('slow movement keeps first clean and chooses an early changed candidate', (
 
     const result = selector.finalizeBuffered()
     assert.equal(result.selected[0].sourceIndex, 0)
-    assert.ok(result.selected[1].elapsedMs >= DEFAULT_MIN_SELECTION_SEPARATION_MS)
-    assert.ok(result.selected[1].elapsedMs <= DEFAULT_FALLBACK_SELECTION_WINDOW_MS)
+    assert.ok(result.selected[1].elapsedMs >= DEFAULT_SPREAD_WINDOW_START_MS)
+    assert.ok(result.selected[1].elapsedMs <= DEFAULT_SPREAD_WINDOW_END_MS)
+    assert.equal(result.selected[1].reason, 'spread_visual_change')
+})
+
+test('person walking up the path: F3 is the first changed frame after the spread window start, not the early far-away one', () => {
+    const selector = new AdaptiveFrameSelector()
+    const base = baseFrame()
+    add(selector, [
+        [0, base, { sourceIndex: 0 }],
+        [1000, patch(base, 60, 40, 6, 12, 200), { sourceIndex: 1 }],
+        [2000, patch(base, 55, 35, 12, 20, 200), { sourceIndex: 2 }],
+        [3000, patch(base, 40, 25, 30, 40, 200), { sourceIndex: 3 }],
+        [4000, patch(base, 20, 10, 60, 70, 200), { sourceIndex: 4 }],
+        [5000, patch(base, 10, 5, 80, 80, 200), { sourceIndex: 5 }],
+        [6000, patch(base, 5, 0, 100, 90, 200), { sourceIndex: 6 }]
+    ])
+
+    const result = selector.finalizeBuffered()
+    assert.equal(result.selected[1].sourceIndex, 4)
+    assert.equal(result.selected[1].reason, 'spread_visual_change')
+})
+
+test('short stream without candidates in the spread window keeps the early selection', () => {
+    const selector = new AdaptiveFrameSelector()
+    const base = baseFrame()
+    add(selector, [
+        [0, base, { sourceIndex: 0 }],
+        [1100, patch(base, 8, 18, 65, 55, 200), { sourceIndex: 1 }],
+        [2200, patch(base, 60, 18, 65, 55, 200), { sourceIndex: 2 }]
+    ])
+
+    const result = selector.finalizeBuffered()
+    assert.equal(result.selected[1].sourceIndex, 1)
+    assert.match(result.selected[1].reason, /^early_visual_change_/)
 })
 
 test('fast movement uses the first eligible changed candidate and ignores a more diverse late frame', () => {
