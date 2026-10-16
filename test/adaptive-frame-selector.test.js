@@ -10,6 +10,7 @@ import {
     DEFAULT_SPREAD_WINDOW_END_MS,
     DEFAULT_SPREAD_WINDOW_START_MS,
     calculateBlockLumaDifference,
+    rgbToLuma,
     calculateBrightnessCompensatedBlockLumaDifference
 } from '../lib/streaming/adaptive-frame-selector.js'
 
@@ -262,4 +263,86 @@ test('88-candidate finalization remains bounded after removing global triple sea
 
     assert.equal(result.selected.length, 3)
     assert.ok(expensiveComparisons < 200, `early selection performed ${expensiveComparisons} expensive luma comparisons`)
+})
+
+function rgbScene({ x = 0, y = 0, size = 0, background = [90, 95, 100], person = [200, 30, 30] } = {}) {
+    const rgb = Buffer.alloc(FRAME_BYTES * 3)
+    for (let i = 0; i < FRAME_BYTES; i++) {
+        rgb[i * 3] = background[0]
+        rgb[(i * 3) + 1] = background[1]
+        rgb[(i * 3) + 2] = background[2]
+    }
+    for (let yy = y; yy < Math.min(HEIGHT, y + size * 2); yy++) {
+        for (let xx = x; xx < Math.min(WIDTH, x + size); xx++) {
+            const i = (yy * WIDTH) + xx
+            rgb[i * 3] = person[0]
+            rgb[(i * 3) + 1] = person[1]
+            rgb[(i * 3) + 2] = person[2]
+        }
+    }
+    return rgb
+}
+
+function addRgb(selector, frames) {
+    frames.forEach(([elapsedMs, rgb], index) => selector.evaluate(candidate(rgbToLuma(rgb), elapsedMs, { sourceIndex: index, rgb })))
+}
+
+test('F3 is the candidate where the person is largest, even when the person walks up and turns back (approach then leave)', () => {
+    const selector = new AdaptiveFrameSelector()
+    addRgb(selector, [
+        [0, rgbScene({ x: 60, y: 30, size: 6 })],
+        [1000, rgbScene({ x: 58, y: 28, size: 9 })],
+        [2000, rgbScene({ x: 50, y: 20, size: 14 })],
+        [3000, rgbScene({ x: 70, y: 30, size: 9 })],
+        [4000, rgbScene({ x: 110, y: 40, size: 4 })],
+        [5000, rgbScene({ x: 130, y: 40, size: 3 })],
+        [6000, rgbScene({ x: 140, y: 40, size: 2 })]
+    ])
+
+    const result = selector.finalizeBuffered()
+    assert.equal(result.selected[1].elapsedMs, 2000)
+    assert.equal(result.selected[1].reason, 'closest_person_area')
+})
+
+test('person walking up to the door: F3 is the late close-up', () => {
+    const selector = new AdaptiveFrameSelector()
+    addRgb(selector, [
+        [0, rgbScene({ x: 100, y: 40, size: 3 })],
+        [1000, rgbScene({ x: 95, y: 38, size: 4 })],
+        [2000, rgbScene({ x: 85, y: 34, size: 6 })],
+        [3000, rgbScene({ x: 75, y: 28, size: 8 })],
+        [4000, rgbScene({ x: 60, y: 20, size: 12 })],
+        [5000, rgbScene({ x: 40, y: 10, size: 16 })],
+        [5900, rgbScene({ x: 30, y: 6, size: 18 })]
+    ])
+
+    const result = selector.finalizeBuffered()
+    assert.equal(result.selected[1].elapsedMs, 5000)
+    assert.equal(result.selected[1].reason, 'closest_person_area')
+})
+
+test('closest-person selection removes a global exposure shift and ignores an empty scene', () => {
+    const selector = new AdaptiveFrameSelector()
+    addRgb(selector, [
+        [0, rgbScene()],
+        [1000, rgbScene({ background: [120, 125, 130] })],
+        [2000, rgbScene({ background: [100, 105, 110] })],
+        [3000, rgbScene({ background: [130, 135, 140] })],
+        [4000, rgbScene({ background: [90, 95, 100] })],
+        [5000, rgbScene({ background: [110, 115, 120] })],
+        [6000, rgbScene()]
+    ])
+
+    const result = selector.finalizeBuffered()
+    assert.notEqual(result.selected[1].reason, 'closest_person_area')
+})
+
+test('without RGB frames the selector keeps the spread-window behaviour', () => {
+    const selector = new AdaptiveFrameSelector()
+    const base = baseFrame()
+    for (const [index, elapsedMs] of [0, 1000, 2000, 3000, 4000, 5000, 6000].entries()) {
+        selector.evaluate(candidate(Buffer.from(base), elapsedMs, { sourceIndex: index }))
+    }
+    const result = selector.finalizeBuffered()
+    assert.match(result.selected[1].reason, /^spread_/)
 })
