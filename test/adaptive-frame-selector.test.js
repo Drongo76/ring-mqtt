@@ -346,3 +346,53 @@ test('without RGB frames the selector keeps the spread-window behaviour', () => 
     const result = selector.finalizeBuffered()
     assert.match(result.selected[1].reason, /^spread_/)
 })
+
+function firstEarlyFinishMs(frames) {
+    const selector = new AdaptiveFrameSelector()
+    for (let index = 0; index < frames.length; index++) {
+        const [elapsedMs, rgb] = frames[index]
+        selector.evaluate(candidate(rgbToLuma(rgb), elapsedMs, { sourceIndex: index, rgb }))
+        if (selector.shouldFinishEarly()) return elapsedMs
+    }
+    return null
+}
+
+function timeline(step, end, sceneAt) {
+    const frames = []
+    for (let t = 0; t <= end; t += step) frames.push([t, sceneAt(t)])
+    return frames
+}
+
+test('early finish: person who peaks early and then leaves ends the burst after ~3 s', () => {
+    const frames = timeline(250, 6000, t => t < 1000
+        ? rgbScene({ x: 50, y: 20, size: 14 })
+        : rgbScene({ x: Math.min(150, 50 + ((t - 1000) / 10)), y: 30, size: Math.max(2, 14 - ((t - 1000) / 400)) }))
+    const finishedAt = firstEarlyFinishMs(frames)
+    assert.ok(finishedAt !== null && finishedAt >= 3000 && finishedAt <= 3500, `finished at ${finishedAt}`)
+})
+
+test('early finish: person who keeps approaching never ends the burst early', () => {
+    const frames = timeline(250, 6000, t => rgbScene({ x: 100 - (t / 100), y: 40 - (t / 200), size: 3 + (t / 450) }))
+    assert.equal(firstEarlyFinishMs(frames), null)
+})
+
+test('early finish: empty scene never ends the burst early', () => {
+    const frames = timeline(250, 6000, () => rgbScene())
+    assert.equal(firstEarlyFinishMs(frames), null)
+})
+
+test('early finish: late arrival (nobody before 4 s) is still observed to the end', () => {
+    const frames = timeline(250, 6000, t => t < 4000 ? rgbScene() : rgbScene({ x: 100 - ((t - 4000) / 50), y: 40, size: 3 + ((t - 4000) / 400) }))
+    assert.equal(firstEarlyFinishMs(frames), null)
+})
+
+test('early finish still yields a valid selection with the closest frame', () => {
+    const selector = new AdaptiveFrameSelector()
+    const frames = timeline(250, 3500, t => t < 1000
+        ? rgbScene({ x: 50, y: 20, size: 14 })
+        : rgbScene({ x: Math.min(150, 50 + ((t - 1000) / 10)), y: 30, size: Math.max(2, 14 - ((t - 1000) / 400)) }))
+    frames.forEach(([elapsedMs, rgb], index) => selector.evaluate(candidate(rgbToLuma(rgb), elapsedMs, { sourceIndex: index, rgb })))
+    const result = selector.finalizeBuffered()
+    assert.equal(result.selected[1].reason, 'closest_person_area')
+    assert.ok(result.selected[1].elapsedMs <= 1250)
+})
