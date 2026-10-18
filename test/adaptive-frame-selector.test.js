@@ -287,7 +287,7 @@ function addRgb(selector, frames) {
     frames.forEach(([elapsedMs, rgb], index) => selector.evaluate(candidate(rgbToLuma(rgb), elapsedMs, { sourceIndex: index, rgb })))
 }
 
-test('F3 is the candidate where the person is largest, even when the person walks up and turns back (approach then leave)', () => {
+test('person walks up and then leaves: F3 is the last frame in which they are still clearly visible, not the close-up', () => {
     const selector = new AdaptiveFrameSelector()
     addRgb(selector, [
         [0, rgbScene({ x: 60, y: 30, size: 6 })],
@@ -300,8 +300,47 @@ test('F3 is the candidate where the person is largest, even when the person walk
     ])
 
     const result = selector.finalizeBuffered()
+    assert.equal(result.selected[1].elapsedMs, 3000)
+    assert.equal(result.selected[1].reason, 'last_visible_person')
+})
+
+test('person at the door who then walks away along the path: F3 shows the departure, not the moment at the door', () => {
+    const selector = new AdaptiveFrameSelector()
+    addRgb(selector, [
+        [0, rgbScene({ x: 20, y: 20, size: 16 })],
+        [1000, rgbScene({ x: 22, y: 20, size: 17 })],
+        [2000, rgbScene({ x: 30, y: 22, size: 13 })],
+        [3000, rgbScene({ x: 50, y: 28, size: 9 })],
+        [4000, rgbScene({ x: 70, y: 32, size: 7 })],
+        [5000, rgbScene({ x: 90, y: 36, size: 5 })],
+        [6000, rgbScene({ x: 110, y: 38, size: 4 })],
+        [6400, rgbScene({ x: 140, y: 40, size: 1 })]
+    ])
+
+    const result = selector.finalizeBuffered()
+    // 1000 ms is where the person is largest (about 144 cells); 4000 ms (about 24 cells) is the last
+    // frame above 10 % of that peak, i.e. the person is already on the way out. 5000 ms (about 12
+    // cells) is below the threshold.
+    assert.equal(result.selected[1].elapsedMs, 4000)
+    assert.equal(result.selected[1].reason, 'last_visible_person')
+})
+
+test('a tiny remnant at the end of the window (person already gone) is not chosen', () => {
+    const selector = new AdaptiveFrameSelector()
+    addRgb(selector, [
+        [0, rgbScene({ x: 40, y: 20, size: 14 })],
+        [1000, rgbScene({ x: 42, y: 20, size: 15 })],
+        [2000, rgbScene({ x: 60, y: 24, size: 10 })],
+        [3000, rgbScene({ x: 100, y: 34, size: 4 })],
+        [4000, rgbScene({ x: 140, y: 40, size: 2 })],
+        [5000, rgbScene({ x: 150, y: 40, size: 1 })],
+        [6000, rgbScene({ x: 150, y: 40, size: 1 })]
+    ])
+
+    const result = selector.finalizeBuffered()
+    // Peak about 112 cells; 2000 ms (about 50 cells) is the last frame above 10 %; 3000 ms (about 8) is not.
     assert.equal(result.selected[1].elapsedMs, 2000)
-    assert.equal(result.selected[1].reason, 'closest_person_area')
+    assert.equal(result.selected[1].reason, 'last_visible_person')
 })
 
 test('person walking up to the door: F3 is the late close-up', () => {
@@ -318,10 +357,10 @@ test('person walking up to the door: F3 is the late close-up', () => {
 
     const result = selector.finalizeBuffered()
     assert.equal(result.selected[1].elapsedMs, 5000)
-    assert.equal(result.selected[1].reason, 'closest_person_area')
+    assert.equal(result.selected[1].reason, 'last_visible_person')
 })
 
-test('closest-person selection removes a global exposure shift and ignores an empty scene', () => {
+test('last-visible-person selection removes a global exposure shift and ignores an empty scene', () => {
     const selector = new AdaptiveFrameSelector()
     addRgb(selector, [
         [0, rgbScene()],
@@ -334,7 +373,7 @@ test('closest-person selection removes a global exposure shift and ignores an em
     ])
 
     const result = selector.finalizeBuffered()
-    assert.notEqual(result.selected[1].reason, 'closest_person_area')
+    assert.notEqual(result.selected[1].reason, 'last_visible_person')
 })
 
 test('without RGB frames the selector keeps the spread-window behaviour', () => {
