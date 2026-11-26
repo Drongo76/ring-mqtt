@@ -385,3 +385,107 @@ test('without RGB frames the selector keeps the spread-window behaviour', () => 
     const result = selector.finalizeBuffered()
     assert.match(result.selected[1].reason, /^spread_/)
 })
+
+// Several people/objects in one RGB frame; each rect is { x, y, size } like rgbScene (size wide, 2 * size high).
+function rgbRects(rects, background = [90, 95, 100], colour = [200, 30, 30]) {
+    const rgb = rgbScene({ background })
+    for (const { x, y, size } of rects) {
+        const layer = rgbScene({ x, y, size, background, person: colour })
+        for (let yy = y; yy < Math.min(HEIGHT, y + size * 2); yy++) {
+            for (let xx = x; xx < Math.min(WIDTH, x + size); xx++) {
+                const i = ((yy * WIDTH) + xx) * 3
+                layer.copy(rgb, i, i, i + 3)
+            }
+        }
+    }
+    return rgb
+}
+
+test('person leaving: F2 is the first frame outside the door zone, not the doorway', () => {
+    const selector = new AdaptiveFrameSelector()
+    addRgb(selector, [
+        [0, rgbScene({ x: 10, y: 20, size: 14 })],
+        [1000, rgbScene({ x: 12, y: 20, size: 14 })],
+        [2000, rgbScene({ x: 50, y: 26, size: 10 })],
+        [3000, rgbScene({ x: 70, y: 30, size: 8 })],
+        [4000, rgbScene({ x: 90, y: 34, size: 6 })],
+        [5000, rgbScene({ x: 110, y: 38, size: 4 })],
+        [6000, rgbScene({ x: 130, y: 40, size: 3 })],
+        [6400, rgbScene({ x: 140, y: 40, size: 1 })]
+    ])
+
+    const result = selector.finalizeBuffered()
+    assert.equal(result.selected[0].elapsedMs, 2000)
+    assert.equal(result.selected[0].reason, 'first_person_outside_door')
+    assert.equal(result.selected[1].reason, 'last_visible_person')
+    assert.ok(result.selected[1].elapsedMs - result.selected[0].elapsedMs >= DEFAULT_MIN_SELECTION_SEPARATION_MS)
+    assert.ok(result.selected[2].elapsedMs > result.selected[1].elapsedMs)
+})
+
+test('person arriving after an empty start: F2 is the first frame with the person on the path', () => {
+    const selector = new AdaptiveFrameSelector()
+    addRgb(selector, [
+        [0, rgbScene()],
+        [1000, rgbScene()],
+        [2000, rgbScene({ x: 110, y: 40, size: 5 })],
+        [3000, rgbScene({ x: 100, y: 34, size: 7 })],
+        [4000, rgbScene({ x: 80, y: 26, size: 10 })],
+        [5000, rgbScene({ x: 60, y: 14, size: 14 })],
+        [5900, rgbScene({ x: 50, y: 8, size: 16 })]
+    ])
+
+    const result = selector.finalizeBuffered()
+    assert.equal(result.selected[0].elapsedMs, 2000)
+    assert.equal(result.selected[0].reason, 'first_person_outside_door')
+    assert.equal(result.selected[1].elapsedMs, 5000)
+})
+
+test('person who stays in the doorway (locking the door) keeps the first clean frame as F2', () => {
+    const selector = new AdaptiveFrameSelector()
+    addRgb(selector, [
+        [0, rgbScene({ x: 6, y: 10, size: 14 })],
+        [1000, rgbScene({ x: 8, y: 12, size: 14 })],
+        [2000, rgbScene({ x: 6, y: 10, size: 15 })],
+        [3000, rgbScene({ x: 10, y: 12, size: 13 })],
+        [4000, rgbScene({ x: 8, y: 10, size: 14 })],
+        [5000, rgbScene({ x: 6, y: 12, size: 14 })],
+        [6000, rgbScene({ x: 8, y: 10, size: 14 })]
+    ])
+
+    const result = selector.finalizeBuffered()
+    assert.equal(result.selected[0].elapsedMs, 0)
+    assert.equal(result.selected[0].reason, 'first_clean_frame')
+})
+
+test('something already outside the door in the first frame does not move F2', () => {
+    const selector = new AdaptiveFrameSelector()
+    addRgb(selector, [
+        [0, rgbRects([{ x: 10, y: 20, size: 14 }, { x: 120, y: 50, size: 6 }])],
+        [1000, rgbRects([{ x: 12, y: 20, size: 14 }, { x: 124, y: 50, size: 6 }])],
+        [2000, rgbRects([{ x: 10, y: 22, size: 14 }, { x: 130, y: 50, size: 5 }])],
+        [3000, rgbScene({ x: 12, y: 20, size: 14 })],
+        [4000, rgbScene({ x: 10, y: 20, size: 14 })],
+        [5000, rgbScene({ x: 12, y: 22, size: 14 })],
+        [6000, rgbScene({ x: 10, y: 20, size: 14 })]
+    ])
+
+    const result = selector.finalizeBuffered()
+    assert.equal(result.selected[0].elapsedMs, 0)
+    assert.equal(result.selected[0].reason, 'first_clean_frame')
+})
+
+test('door zone 0 switches the F2 search off', () => {
+    const selector = new AdaptiveFrameSelector({ doorZoneRatio: 0 })
+    addRgb(selector, [
+        [0, rgbScene({ x: 10, y: 20, size: 14 })],
+        [1000, rgbScene({ x: 12, y: 20, size: 14 })],
+        [2000, rgbScene({ x: 50, y: 26, size: 10 })],
+        [3000, rgbScene({ x: 70, y: 30, size: 8 })],
+        [4000, rgbScene({ x: 90, y: 34, size: 6 })],
+        [5000, rgbScene({ x: 110, y: 38, size: 4 })],
+        [6000, rgbScene({ x: 130, y: 40, size: 3 })]
+    ])
+
+    const result = selector.finalizeBuffered()
+    assert.equal(result.selected[0].reason, 'first_clean_frame')
+})
